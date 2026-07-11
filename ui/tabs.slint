@@ -7,6 +7,7 @@ export struct TabInfo {
     title_len: int,
     kind: string,   // "welcome" | "terminal"
     connected: bool,
+    state: int,     // 0 connecting / 1 connected / 2 disconnected
 }
 
 // --- SingleTab -------------------------------------------------------------
@@ -189,6 +190,9 @@ export component TabBar inherits Rectangle {
     callback tab-split(string /* tab-id */, string /* dir */);
     // Open another connection to the same session as `tab-id` (#v0.5).
     callback tab-duplicate(string /* tab-id */);
+    callback tab-disconnect(string /* tab-id */);
+    callback tab-connect(string /* tab-id */);
+    callback tab-reconnect(string /* tab-id */);
     callback merge-pane();
     // Drag-to-split (#v0.5): cursor moved / dropped while dragging `tab-id`, in
     // absolute (window) coordinates.
@@ -199,6 +203,8 @@ export component TabBar inherits Rectangle {
     property <length> menu-x;
     property <length> menu-y;
     property <string> menu-target;
+    property <string> menu-kind;
+    property <int> menu-state;
 
     height: 36px;
     background: Theme.bg-panel-alt;
@@ -232,6 +238,8 @@ export component TabBar inherits Rectangle {
                     reorder(dir) => { root.tab-reorder(i, dir); }
                     context-requested(ax, ay) => {
                         root.menu-target = tab.id;
+                        root.menu-kind = tab.kind;
+                        root.menu-state = tab.state;
                         root.menu-x = ax - root.absolute-position.x;
                         root.menu-y = ay - root.absolute-position.y;
                         tab-menu.show();
@@ -283,8 +291,8 @@ export component TabBar inherits Rectangle {
     tab-menu := PopupWindow {
         x: root.menu-x;
         y: root.menu-y;
-        width: 140px;
-        height: 6 * 29px + 13px;
+        width: 160px;
+        height: 9 * 29px + 13px;
         Rectangle {
             background: Theme.bg-panel;
             border-radius: Theme.radius-sm;
@@ -295,6 +303,22 @@ export component TabBar inherits Rectangle {
             VerticalLayout {
                 padding: 4px;
                 spacing: 1px;
+                TabMenuItem {
+                    label: @tr("Disconnect");
+                    enabled: root.menu-kind == "terminal" && root.menu-state != 2;
+                    clicked => { root.tab-disconnect(root.menu-target); }
+                }
+                TabMenuItem {
+                    label: @tr("Connect");
+                    enabled: root.menu-kind == "terminal" && root.menu-state == 2;
+                    clicked => { root.tab-connect(root.menu-target); }
+                }
+                TabMenuItem {
+                    label: @tr("Reconnect");
+                    enabled: root.menu-kind == "terminal";
+                    clicked => { root.tab-reconnect(root.menu-target); }
+                }
+                Rectangle { height: 1px; background: Theme.border-subtle; }
                 TabMenuItem {
                     label: @tr("Duplicate connection");
                     enabled: root.menu-target != "welcome";

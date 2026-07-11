@@ -146,6 +146,7 @@ fn tab_title_len(title: &str) -> i32 {
 }
 
 type SftpHandles = Arc<Mutex<HashMap<String, SftpHandle>>>;
+type PendingReconnects = Arc<Mutex<HashSet<String>>>;
 /// Per-tab flag: once the user explicitly navigates via the SFTP tree or
 /// toolbar, stop auto-syncing to the terminal's `cd` path.
 /// Per-tab last cwd the SFTP panel followed (from OSC 7). Used to ignore the
@@ -542,6 +543,9 @@ pub fn run() -> Result<()> {
     // Per-tab SFTP handles — Arc<Mutex> so the event-pump OS thread and the
     // Slint UI thread can both post SftpCommands.
     let sftp_handles: SftpHandles = Arc::new(Mutex::new(HashMap::new()));
+    // Tabs waiting for an explicit right-click "Reconnect". The old worker's
+    // final Closed event consumes the flag before the replacement starts.
+    let pending_reconnects: PendingReconnects = Arc::new(Mutex::new(HashSet::new()));
     // Per-tab cwd the SFTP panel last followed (see SftpLastCwd).
     let sftp_last_cwd: SftpLastCwd = Arc::new(Mutex::new(HashMap::new()));
 
@@ -1111,6 +1115,7 @@ pub fn run() -> Result<()> {
         title: t("新标签页", "New tab").into(),
         kind: "welcome".into(),
         connected: false,
+        state: 2,
     });
     window.set_tabs(ModelRc::from(tabs_model.clone()));
     window.set_active_tab_id("welcome".into());
@@ -1269,6 +1274,7 @@ pub fn run() -> Result<()> {
         local_snap.clone(),
         local_net_hist.clone(),
         sftp_follow_cd.clone(),
+        pending_reconnects.clone(),
     );
 
     // Recompute the sidebar whenever the active tab changes (fired from Slint's
@@ -1636,6 +1642,7 @@ pub fn run() -> Result<()> {
             last_term_size: last_term_size.clone(),
             sftp_follow_cd: sftp_follow_cd.clone(),
             store: store.clone(),
+            pending_reconnects: pending_reconnects.clone(),
         },
     );
 
@@ -2561,6 +2568,7 @@ fn wire_session_callbacks(
     local_snap: LocalSnap,
     local_net_hist: NetHist,
     sftp_follow_cd: Arc<std::sync::atomic::AtomicBool>,
+    pending_reconnects: PendingReconnects,
 ) {
     // Working set of port forwards (#56) for the session being created/edited.
     // The forward add/delete callbacks mutate it; saving reads it into
@@ -3291,6 +3299,7 @@ fn wire_session_callbacks(
                 title: tab_title.into(),
                 kind: "terminal".into(),
                 connected: false,
+                state: 0,
             });
             // Each session keeps its own SFTP collapse state + sizes, seeded from
             // the global defaults (the "collapse SFTP by default" pref and the
@@ -3396,6 +3405,7 @@ fn wire_session_callbacks(
                 last_term_size: last_term_size.clone(),
                 sftp_follow_cd: sftp_follow_cd.clone(),
                 store: store.clone(),
+                pending_reconnects: pending_reconnects.clone(),
             };
             start_session_in_tab(&tab_id, session, &ctx);
         });
@@ -3437,6 +3447,7 @@ type NetHist = Arc<Mutex<Vec<NetSample>>>;
 /// Shared connection dependencies for `start_session_in_tab`. All fields are
 /// cheap clones (Arc / Weak / Rc), so connect and in-place reconnect can both
 /// build one and spawn workers for a tab (#79).
+#[derive(Clone)]
 struct ConnectCtx {
     weak: slint::Weak<AppWindow>,
     runtime: Arc<Runtime>,
@@ -3454,6 +3465,9 @@ struct ConnectCtx {
     /// Config store, so a session's jump host (#211) can be resolved by id at
     /// connect time on the UI thread.
     store: Rc<RefCell<ConfigStore>>,
+    /// Explicit context-menu reconnects wait for the old worker's Closed event
+    /// before starting a replacement in the same tab.
+    pending_reconnects: PendingReconnects,
 }
 
 /// Resolve a session's configured SSH jump host to the saved session it points
@@ -3466,6 +3480,135 @@ fn resolve_jump(store: &Rc<RefCell<ConfigStore>>, session: &Session) -> Option<S
         return None;
     }
     store.borrow().get(&session.jump_session_id).cloned()
+}
+
+/// Update the connection fields in both the master tab model and the per-pane
+/// snapshots rendered by split panes.
+fn set_tab_connection_state(win: &AppWindow, tab_id: &str, state: i32) {
+    let update = |model: &VecModel<TabInfo>| {
+        for i in 0..model.row_count() {
+            if let Some(mut row) = model.row_data(i) {
+                if row.id.as_str() == tab_id {
+                    row.state = state;
+                    row.connected = state == 1;
+                    model.set_row_data(i, row);
+                    break;
+                }
+            }
+        }
+    };
+
+    if let Some(tabs) = win.get_tabs().as_any().downcast_ref::<VecModel<TabInfo>>() {
+        update(tabs);
+    }
+    if let Some(panes) = win
+        .get_panes()
+        .as_any()
+        .downcast_ref::<VecModel<PaneInfo>>()
+    {
+        for i in 0..panes.row_count() {
+            if let Some(pane) = panes.row_data(i) {
+                if let Some(tabs) = pane.tabs.as_any().downcast_ref::<VecModel<TabInfo>>() {
+                    update(tabs);
+                }
+            }
+        }
+    }
+}
+
+/// Reconnect a disconnected session in its existing tab. Shared by the Enter
+/// shortcut and the tab context-menu Connect/Reconnect actions.
+fn reconnect_tab_in_place(
+    tab_id: &str,
+    store: &Rc<RefCell<ConfigStore>>,
+    ctx: &ConnectCtx,
+) -> bool {
+    let session_id = {
+        let statuses = ctx.tab_statuses.lock().unwrap();
+        statuses
+            .get(tab_id)
+            .filter(|st| st.state == 2)
+            .map(|st| st.session_id.clone())
+    };
+    let Some(session_id) = session_id else {
+        return false;
+    };
+    // A closed tab no longer has a terminal buffer; never resurrect it when a
+    // delayed Closed event completes a pending reconnect.
+    if term_buf(&ctx.bufs, tab_id).is_none() {
+        return false;
+    }
+    let Some(session) = store.borrow().get(&session_id).cloned() else {
+        return false;
+    };
+
+    ctx.handles.borrow_mut().remove(tab_id);
+    if let Some(handle) = ctx.sftp_handles.lock().unwrap().remove(tab_id) {
+        handle.close();
+    }
+    if let Some(handle) = term_buf(&ctx.bufs, tab_id) {
+        let mut buffer = handle.lock().unwrap();
+        let (rows, cols) = buffer.parser.screen().size();
+        buffer.parser = vt100::Parser::new(rows, cols, 5000);
+        buffer.history.clear();
+        buffer.prev.clear();
+        buffer.displayed_text.clear();
+        buffer.view_offset = 0;
+        buffer.sel_anchor = None;
+        buffer.sel_focus = None;
+        buffer.raw.clear();
+    }
+    if let Some(status) = ctx.tab_statuses.lock().unwrap().get_mut(tab_id) {
+        status.state = 0;
+    }
+    ctx.sftp_last_cwd.lock().unwrap().remove(tab_id);
+    if let Some(win) = ctx.weak.upgrade() {
+        set_tab_connection_state(&win, tab_id, 0);
+        set_terminal_row(&win, tab_id, |terminal| {
+            terminal.status = crate::i18n::t("重连中...", "Reconnecting...").into();
+        });
+    }
+    start_session_in_tab(tab_id, session, ctx);
+    true
+}
+
+/// Request a running tab to close while keeping the tab itself. When
+/// `reconnect` is true, its final Closed event starts a replacement connection.
+fn disconnect_tab_in_place(tab_id: &str, ctx: &ConnectCtx, reconnect: bool) -> bool {
+    let is_running = ctx
+        .tab_statuses
+        .lock()
+        .unwrap()
+        .get(tab_id)
+        .is_some_and(|status| status.state != 2);
+    if !is_running {
+        return false;
+    }
+
+    if reconnect {
+        ctx.pending_reconnects
+            .lock()
+            .unwrap()
+            .insert(tab_id.to_string());
+    } else {
+        ctx.pending_reconnects.lock().unwrap().remove(tab_id);
+    }
+    if let Some(handle) = ctx.handles.borrow_mut().remove(tab_id) {
+        handle.close();
+    }
+    if let Some(handle) = ctx.sftp_handles.lock().unwrap().remove(tab_id) {
+        handle.close();
+    }
+    if let Some(win) = ctx.weak.upgrade() {
+        set_terminal_row(&win, tab_id, |terminal| {
+            terminal.status = if reconnect {
+                crate::i18n::t("正在重新连接...", "Reconnecting...").into()
+            } else {
+                crate::i18n::t("正在断开...", "Disconnecting...").into()
+            };
+        });
+    }
+    true
 }
 
 /// Spawn the shell (+ SFTP) workers and their event-pump threads for an
@@ -3527,6 +3670,7 @@ fn start_session_in_tab(tab_id: &str, session: Session, ctx: &ConnectCtx) {
         let net_pump = ctx.local_net_hist.clone();
         let follow_cd_pump = ctx.sftp_follow_cd.clone();
         let render_gates_pump = ctx.render_gates.clone();
+        let pending_reconnects_pump = ctx.pending_reconnects.clone();
         std::thread::spawn(move || {
             let mut shell_rx = rx;
             let mut cwd_debounce: Option<tokio::task::JoinHandle<()>> = None;
@@ -3653,12 +3797,19 @@ fn start_session_in_tab(tab_id: &str, session: Session, ctx: &ConnectCtx) {
                 let lc_evt = local_pump.clone();
                 let nh_evt = net_pump.clone();
                 let gates_evt = render_gates_pump.clone();
+                let reconnects_evt = pending_reconnects_pump.clone();
+                let saw_closed = ui_only
+                    .iter()
+                    .any(|event| matches!(event, SessionEvent::Closed(_)));
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(win) = weak_evt.upgrade() {
                         for evt in ui_only {
                             apply_session_event_to_window(
                                 &win, &tid, evt, &bufs_evt, &gates_evt, &st_evt, &lc_evt, &nh_evt,
                             );
+                        }
+                        if saw_closed && reconnects_evt.lock().unwrap().remove(&tid) {
+                            win.invoke_tab_connect(tid.clone().into());
                         }
                     }
                 });
@@ -4640,7 +4791,10 @@ fn apply_session_event_to_window(
             run_coalesced_tab_render(&win.as_weak(), tab_id, bufs, gates);
         }
         SessionEvent::Connected => {
-            update_tab(&|t| t.connected = true);
+            update_tab(&|t| {
+                t.connected = true;
+                t.state = 1;
+            });
             update_terminal(&|t| t.status = crate::i18n::t("已连接", "Connected").into());
             if let Some(st) = statuses.lock().unwrap().get_mut(tab_id) {
                 st.state = 1;
@@ -4668,7 +4822,10 @@ fn apply_session_event_to_window(
                 local,
                 local_net_hist,
             );
-            update_tab(&|t| t.connected = false);
+            update_tab(&|t| {
+                t.connected = false;
+                t.state = 2;
+            });
             update_terminal(&|t| {
                 t.status = format!("{} — {reason}", crate::i18n::t("已断开", "Disconnected")).into()
             });
@@ -6656,6 +6813,32 @@ fn wire_key_input(
     store: Rc<RefCell<ConfigStore>>,
     ctx: ConnectCtx,
 ) {
+    // Tab context-menu connection controls. Connect reuses the existing
+    // in-place reconnect path; Reconnect waits for the old worker's Closed event
+    // before starting the replacement, preventing stale state from winning.
+    {
+        let store = store.clone();
+        let ctx = ctx.clone();
+        window.on_tab_connect(move |tab_id: SharedString| {
+            reconnect_tab_in_place(tab_id.as_str(), &store, &ctx);
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        window.on_tab_disconnect(move |tab_id: SharedString| {
+            disconnect_tab_in_place(tab_id.as_str(), &ctx, false);
+        });
+    }
+    {
+        let store = store.clone();
+        let ctx = ctx.clone();
+        window.on_tab_reconnect(move |tab_id: SharedString| {
+            if !reconnect_tab_in_place(tab_id.as_str(), &store, &ctx) {
+                disconnect_tab_in_place(tab_id.as_str(), &ctx, true);
+            }
+        });
+    }
+
     // --- Command bar (#55): run command + quick-command management ---------
     {
         let handles_rc = handles.clone();
@@ -6993,56 +7176,12 @@ fn wire_key_input(
             // FinalShell-style: the tab shows "连接已断开,按 Enter 重新连接";
             // pressing Enter re-spawns the shell + SFTP workers in the SAME tab
             // with a fresh screen instead of forcing the user to open a new one.
-            if key.as_str() == "\n" && !ctrl && !alt {
-                let dead_session = {
-                    let statuses = ctx.tab_statuses.lock().unwrap();
-                    statuses
-                        .get(tab_id.as_str())
-                        .filter(|st| st.state == 2)
-                        .map(|st| st.session_id.clone())
-                };
-                if let Some(session_id) = dead_session {
-                    let Some(session) = store.borrow().get(&session_id).cloned() else {
-                        return;
-                    };
-                    // Drop the dead shell/SFTP handles for this tab.
-                    ctx.handles.borrow_mut().remove(tab_id.as_str());
-                    if let Some(h) =
-                        ctx.sftp_handles.lock().unwrap().remove(tab_id.as_str())
-                    {
-                        h.close();
-                    }
-                    // Fresh screen: new parser, cleared history/selection.
-                    {
-                        if let Some(h) = term_buf(&ctx.bufs, tab_id.as_str()) {
-                            let mut b = h.lock().unwrap();
-                            let (rows, cols) = b.parser.screen().size();
-                            b.parser = vt100::Parser::new(rows, cols, 5000);
-                            b.history.clear();
-                            b.prev.clear();
-                            b.displayed_text.clear();
-                            b.view_offset = 0;
-                            b.sel_anchor = None;
-                            b.sel_focus = None;
-                            b.raw.clear();
-                        }
-                    }
-                    if let Some(st) =
-                        ctx.tab_statuses.lock().unwrap().get_mut(tab_id.as_str())
-                    {
-                        st.state = 0;
-                    }
-                    // Fresh session: the first OSC 7 after reconnect follows.
-                    ctx.sftp_last_cwd.lock().unwrap().remove(tab_id.as_str());
-                    if let Some(w) = ctx.weak.upgrade() {
-                        set_terminal_row(&w, tab_id.as_str(), |t| {
-                            t.status =
-                                crate::i18n::t("重连中...", "Reconnecting...").into();
-                        });
-                    }
-                    start_session_in_tab(tab_id.as_str(), session, &ctx);
-                    return;
-                }
+            if key.as_str() == "\n"
+                && !ctrl
+                && !alt
+                && reconnect_tab_in_place(tab_id.as_str(), &store, &ctx)
+            {
+                return;
             }
             // Check whether the remote PTY switched to application cursor mode
             // (DECCKM, set by nano/vim via \x1b[?1h). In that mode the terminal

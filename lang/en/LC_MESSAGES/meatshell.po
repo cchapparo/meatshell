@@ -165,6 +165,12 @@ msgstr "Create"
 msgid "Connect"
 msgstr "Connect"
 
+msgid "Disconnect"
+msgstr "Disconnect"
+
+msgid "Reconnect"
+msgstr "Reconnect"
+
 msgid "Test connection"
 msgstr "Test connection"
 

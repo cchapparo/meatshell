@@ -650,6 +650,9 @@ export component AppWindow inherits Window {
     callback pane-merge(int /* pane-id */);
     // Open another connection to the same session as `tab-id` (a new tab).
     callback tab-duplicate(string /* tab-id */);
+    callback tab-disconnect(string /* tab-id */);
+    callback tab-connect(string /* tab-id */);
+    callback tab-reconnect(string /* tab-id */);
     // Drag-to-split (v0.5): cursor moved / dropped while dragging `tab-id`, in
     // pane-area coordinates. Rust hit-tests the pane + edge zone.
     callback tab-drag-move(string /* tab-id */, length /* x */, length /* y */);
@@ -1198,6 +1201,9 @@ export component AppWindow inherits Window {
                     tab-split(id, dir) => { root.pane-split(pane.id, id, dir); }
                     merge-pane() => { root.pane-merge(pane.id); }
                     tab-duplicate(id) => { root.tab-duplicate(id); }
+                    tab-disconnect(id) => { root.tab-disconnect(id); }
+                    tab-connect(id) => { root.tab-connect(id); }
+                    tab-reconnect(id) => { root.tab-reconnect(id); }
                     tab-drag-move(id, ax, ay) => {
                         root.tab-drag-move(id,
                             ax - pane-area.absolute-position.x,

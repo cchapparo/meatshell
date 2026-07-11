@@ -17,7 +17,6 @@ pub struct SystemSnapshot {
     pub mem_total_mib: u64,
     pub swap_used_mib: u64,
     pub swap_total_mib: u64,
-    pub net_bytes_per_sec: u64,
     pub net_rx_per_sec: u64,
     pub net_tx_per_sec: u64,
     /// Per-filesystem (mount, available_bytes, total_bytes).
@@ -119,7 +118,6 @@ impl SystemSampler {
             mem_total_mib: mem_total / 1024 / 1024,
             swap_used_mib: swap_used / 1024 / 1024,
             swap_total_mib: swap_total / 1024 / 1024,
-            net_bytes_per_sec: net_rx_per_sec + net_tx_per_sec,
             net_rx_per_sec,
             net_tx_per_sec,
             disks,

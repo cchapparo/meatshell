@@ -1,5 +1,6 @@
 import { Theme } from "theme.slint";
 import { Sparkline } from "widgets.slint";
+import { ProcRow } from "proc_window.slint";
 
 // One filesystem row for the disk-usage panel.
 export struct DiskInfo {
@@ -75,7 +76,8 @@ component StatRow inherits HorizontalLayout {
 component NetGraph inherits VerticalLayout {
     in property <string> up-text;
     in property <string> down-text;
-    in property <[float]> history;
+    in property <[float]> up-history;
+    in property <[float]> down-history;
     in property <bool> show-selector: false;
     in property <[string]> ifaces;
     in property <string> selected;
@@ -88,10 +90,10 @@ component NetGraph inherits VerticalLayout {
 
     HorizontalLayout {
         spacing: 3px;
-        Text {                              // ↑ upload (green)
+        Text {                              // ↑ upload (orange)
             text: "\u{E5D8}";
             font-family: "Material Icons";
-            color: Theme.success;
+            color: Theme.warning;
             font-size: Theme.fs-xs;
             vertical-alignment: center;
         }
@@ -101,10 +103,10 @@ component NetGraph inherits VerticalLayout {
             font-size: Theme.fs-xs;
             vertical-alignment: center;
         }
-        Text {                              // ↓ download (blue)
+        Text {                              // ↓ download (green)
             text: "\u{E5DB}";
             font-family: "Material Icons";
-            color: Theme.accent;
+            color: Theme.success;
             font-size: Theme.fs-xs;
             vertical-alignment: center;
         }
@@ -184,8 +186,10 @@ component NetGraph inherits VerticalLayout {
 
     Sparkline {
         height: 48px;
-        values: root.history;
-        line-color: Theme.accent;
+        upload-values: root.up-history;
+        download-values: root.down-history;
+        upload-color: Theme.warning;
+        download-color: Theme.success;
     }
 }
 
@@ -319,22 +323,114 @@ component StatsBlock inherits VerticalLayout {
 component NetBlock inherits VerticalLayout {
     in property <string> net-top-up;
     in property <string> net-top-down;
-    in property <[float]> net-top-history;
+    in property <[float]> net-top-up-history;
+    in property <[float]> net-top-down-history;
     in property <bool> net-show-selector;
     in property <[string]> net-ifaces;
     in property <string> net-selected;
     in property <string> net-bot-up;
     in property <string> net-bot-down;
-    in property <[float]> net-bot-history;
+    in property <[float]> net-bot-up-history;
+    in property <[float]> net-bot-down-history;
     callback select-net-iface(string);
     spacing: 6px;
     NetGraph {
-        up-text: root.net-top-up; down-text: root.net-top-down; history: root.net-top-history;
+        up-text: root.net-top-up; down-text: root.net-top-down;
+        up-history: root.net-top-up-history; down-history: root.net-top-down-history;
         show-selector: root.net-show-selector; ifaces: root.net-ifaces; selected: root.net-selected;
         iface-selected(i) => { root.select-net-iface(i); }
     }
     Text { text: @tr("Local"); color: Theme.text-muted; font-size: Theme.fs-xs; }
-    NetGraph { up-text: root.net-bot-up; down-text: root.net-bot-down; history: root.net-bot-history; }
+    NetGraph {
+        up-text: root.net-bot-up; down-text: root.net-bot-down;
+        up-history: root.net-bot-up-history; down-history: root.net-bot-down-history;
+    }
+}
+
+// Compact CPU graph reusing the live, CPU-sorted process model that also feeds
+// the detachable process window. Only the first five rows are laid out.
+component ProcessCpuBlock inherits VerticalLayout {
+    in property <bool> available;
+    in property <[ProcRow]> processes;
+    callback show-processes();
+
+    visible: root.available;
+    vertical-stretch: 0;
+    spacing: 3px;
+
+    Rectangle {
+        height: 18px;
+        background: cpu-head-ta.has-hover ? Theme.bg-hover : transparent;
+        border-radius: Theme.radius-sm;
+        cpu-head-ta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.show-processes(); }
+        }
+        HorizontalLayout {
+            padding-left: 4px; padding-right: 4px;
+            Text {
+                text: @tr("Processes") + " · CPU Top 5";
+                color: Theme.text-muted;
+                font-size: Theme.fs-xs;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: "";
+                font-family: "Material Icons";
+                color: Theme.text-muted;
+                font-size: Theme.fs-xs;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    if root.processes.length == 0 : Text {
+        height: 18px;
+        text: @tr("No processes");
+        color: Theme.text-muted;
+        font-size: Theme.fs-xs;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+
+    for p[i] in root.processes : Rectangle {
+        visible: i < 5;
+        height: self.visible ? 18px : 0px;
+        background: Theme.bg-root;
+        border-radius: 2px;
+        clip: true;
+
+        // Reuse the same absolute CPU fraction and warning threshold as the
+        // detachable process monitor, so the two views agree visually.
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            height: parent.height;
+            width: parent.width * clamp(p.cpu-frac, 0.0, 1.0);
+            background: p.cpu-frac > 0.5 ? Theme.warning.with-alpha(0.32)
+                      : Theme.accent.with-alpha(0.24);
+        }
+        HorizontalLayout {
+            padding-left: 5px; padding-right: 5px; spacing: 4px;
+            Text {
+                text: p.name;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-xs;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Text {
+                text: p.cpu + "%";
+                width: 42px;
+                color: Theme.text-primary;
+                font-size: Theme.fs-xs;
+                vertical-alignment: center;
+                horizontal-alignment: right;
+            }
+        }
+    }
 }
 
 // Disk-usage list with a hover tooltip, self-contained.
@@ -412,15 +508,18 @@ export component Sidebar inherits Rectangle {
     in property <string> swap-detail;
     in property <string> net-top-up;
     in property <string> net-top-down;
-    in property <[float]> net-top-history;
+    in property <[float]> net-top-up-history;
+    in property <[float]> net-top-down-history;
     in property <string> net-bot-up;
     in property <string> net-bot-down;
-    in property <[float]> net-bot-history;
+    in property <[float]> net-bot-up-history;
+    in property <[float]> net-bot-down-history;
     in property <[string]> net-ifaces;
     in property <string> net-selected;
     in property <bool> net-show-selector;
     in property <[DiskInfo]> disks;
     in property <bool> proc-available;   // a live remote session → show the process button (#23)
+    in property <[ProcRow]> proc-list;   // shared live model; already sorted by CPU
     // App version string, injected from Rust (env!("CARGO_PKG_VERSION")) so it
     // always matches Cargo.toml without hand-editing this file.
     in property <string> app-version;
@@ -496,10 +595,17 @@ export component Sidebar inherits Rectangle {
             }
             Rectangle { height: 1px; background: Theme.border-subtle; }
             NetBlock {
-                net-top-up: root.net-top-up; net-top-down: root.net-top-down; net-top-history: root.net-top-history;
+                net-top-up: root.net-top-up; net-top-down: root.net-top-down;
+                net-top-up-history: root.net-top-up-history; net-top-down-history: root.net-top-down-history;
                 net-show-selector: root.net-show-selector; net-ifaces: root.net-ifaces; net-selected: root.net-selected;
-                net-bot-up: root.net-bot-up; net-bot-down: root.net-bot-down; net-bot-history: root.net-bot-history;
+                net-bot-up: root.net-bot-up; net-bot-down: root.net-bot-down;
+                net-bot-up-history: root.net-bot-up-history; net-bot-down-history: root.net-bot-down-history;
                 select-net-iface(i) => { root.select-net-iface(i); }
+            }
+            ProcessCpuBlock {
+                available: root.proc-available;
+                processes: root.proc-list;
+                show-processes() => { root.show-processes(); }
             }
             Rectangle { height: 1px; background: Theme.border-subtle; }
             DiskBlock { vertical-stretch: 1; disks: root.disks; }
@@ -549,12 +655,22 @@ export component Sidebar inherits Rectangle {
                 }
             }
             Rectangle { width: 1px; background: Theme.border-subtle; }
-            NetBlock {
+            VerticalLayout {
                 min-width: 220px;
-                net-top-up: root.net-top-up; net-top-down: root.net-top-down; net-top-history: root.net-top-history;
-                net-show-selector: root.net-show-selector; net-ifaces: root.net-ifaces; net-selected: root.net-selected;
-                net-bot-up: root.net-bot-up; net-bot-down: root.net-bot-down; net-bot-history: root.net-bot-history;
-                select-net-iface(i) => { root.select-net-iface(i); }
+                spacing: 6px;
+                NetBlock {
+                    net-top-up: root.net-top-up; net-top-down: root.net-top-down;
+                    net-top-up-history: root.net-top-up-history; net-top-down-history: root.net-top-down-history;
+                    net-show-selector: root.net-show-selector; net-ifaces: root.net-ifaces; net-selected: root.net-selected;
+                    net-bot-up: root.net-bot-up; net-bot-down: root.net-bot-down;
+                    net-bot-up-history: root.net-bot-up-history; net-bot-down-history: root.net-bot-down-history;
+                    select-net-iface(i) => { root.select-net-iface(i); }
+                }
+                ProcessCpuBlock {
+                    available: root.proc-available;
+                    processes: root.proc-list;
+                    show-processes() => { root.show-processes(); }
+                }
             }
             Rectangle { width: 1px; background: Theme.border-subtle; }
             DiskBlock { horizontal-stretch: 1; disks: root.disks; }

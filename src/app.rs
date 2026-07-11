@@ -171,12 +171,18 @@ struct TabStatus {
     net: Vec<(String, u64, u64)>,
     /// Which interface drives the top sparkline (empty = auto = busiest).
     selected_iface: String,
-    /// Ring buffer of the selected interface's total (rx+tx) bytes/sec.
-    net_hist: Vec<f32>,
+    /// Ring buffer of the selected interface's download/upload bytes/sec.
+    net_hist: Vec<NetSample>,
     /// Per-filesystem (mount, available_bytes, total_bytes).
     disks: Vec<(String, u64, u64)>,
     /// Top remote processes by CPU, for the process monitor popup (#23).
     procs: Vec<ProcInfo>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct NetSample {
+    download: f32,
+    upload: f32,
 }
 type TabStatuses = Arc<Mutex<HashMap<String, TabStatus>>>;
 /// Last local-machine sample (shown on the welcome tab).
@@ -333,8 +339,12 @@ fn set_window_icon(window: &AppWindow) {
 fn apply_window_chrome(window: &slint::Window) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     window.with_winit_window(|ww| {
-        let Ok(handle) = ww.window_handle() else { return };
-        let RawWindowHandle::Win32(h) = handle.as_raw() else { return };
+        let Ok(handle) = ww.window_handle() else {
+            return;
+        };
+        let RawWindowHandle::Win32(h) = handle.as_raw() else {
+            return;
+        };
         let hwnd = h.hwnd.get();
 
         #[link(name = "dwmapi")]
@@ -357,9 +367,7 @@ fn apply_window_chrome(window: &slint::Window) {
                 (&pref as *const u32).cast(),
                 4,
             );
-            tracing::debug!(
-                "window chrome applied: hwnd={hwnd:#x} corner_hr={corner_hr:#x}"
-            );
+            tracing::debug!("window chrome applied: hwnd={hwnd:#x} corner_hr={corner_hr:#x}");
         }
     });
 }
@@ -379,9 +387,7 @@ fn setup_windows_platform() {
     }
     let backend = builder
         .with_window_attributes_hook(|attrs| {
-            attrs
-                .with_transparent(false)
-                .with_undecorated_shadow(false)
+            attrs.with_transparent(false).with_undecorated_shadow(false)
         })
         .build();
 
@@ -1239,7 +1245,7 @@ pub fn run() -> Result<()> {
     // and the local machine's network history (bottom sparkline).
     let tab_statuses: TabStatuses = Arc::new(Mutex::new(HashMap::new()));
     let local_snap: LocalSnap = Arc::new(Mutex::new(SystemSnapshot::default()));
-    let local_net_hist: NetHist = Arc::new(Mutex::new(vec![0.0; NET_HISTORY_LEN]));
+    let local_net_hist: NetHist = Arc::new(Mutex::new(vec![NetSample::default(); NET_HISTORY_LEN]));
 
     // --- Wire callbacks --------------------------------------------------
     wire_session_callbacks(
@@ -1404,7 +1410,7 @@ pub fn run() -> Result<()> {
             let active = w.get_active_tab_id().to_string();
             if let Some(st) = statuses.lock().unwrap().get_mut(&active) {
                 st.selected_iface = iface.to_string();
-                st.net_hist = vec![0.0; NET_HISTORY_LEN]; // reset graph for new NIC
+                st.net_hist = vec![NetSample::default(); NET_HISTORY_LEN]; // reset graph for new NIC
             }
             refresh_sidebar(&w, &statuses, &local, &net);
         });
@@ -1677,9 +1683,14 @@ pub fn run() -> Result<()> {
                 let mut s = tick_sampler.lock().expect("sampler poisoned");
                 s.sample()
             };
-            // Append the raw local throughput to the bottom-graph ring buffer
-            // (normalisation happens at display time so the graph auto-scales).
-            push_ring(&mut tick_net.lock().unwrap(), snap.net_bytes_per_sec as f32);
+            // Append raw download/upload throughput to the bottom-graph ring
+            // buffer. Normalisation happens at display time so both stacked
+            // segments share one scale and remain directly comparable.
+            push_net_sample(
+                &mut tick_net.lock().unwrap(),
+                snap.net_rx_per_sec as f32,
+                snap.net_tx_per_sec as f32,
+            );
             // Stash the local sample; the sidebar shows it on the welcome tab
             // and in the bottom network graph.
             *tick_local.lock().unwrap() = snap.clone();
@@ -2040,7 +2051,14 @@ fn terminal_wheel_hit(
     } else {
         term_state.sftp_panel_height + 4.0
     };
-    shrink_edge(&mut term_x, &mut term_y, &mut term_w, &mut term_h, &sftp_dock, sftp_take);
+    shrink_edge(
+        &mut term_x,
+        &mut term_y,
+        &mut term_w,
+        &mut term_h,
+        &sftp_dock,
+        sftp_take,
+    );
 
     // Leave the command bar to TextInput/history handling; wheel fallback is for
     // terminal output only.
@@ -3414,7 +3432,7 @@ fn wire_session_callbacks(
     }
 }
 
-type NetHist = Arc<Mutex<Vec<f32>>>;
+type NetHist = Arc<Mutex<Vec<NetSample>>>;
 
 /// Shared connection dependencies for `start_session_in_tab`. All fields are
 /// cheap clones (Arc / Weak / Rc), so connect and in-place reconnect can both
@@ -3831,21 +3849,34 @@ fn natural_ascii_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     ab.len().cmp(&bb.len())
 }
 
-/// Push a value into a fixed-length ring buffer (newest at the end).
-fn push_ring(buf: &mut Vec<f32>, val: f32) {
+/// Push one download/upload sample into a fixed-length ring buffer (newest last).
+fn push_net_sample(buf: &mut Vec<NetSample>, download: f32, upload: f32) {
     if buf.len() != NET_HISTORY_LEN {
-        *buf = vec![0.0; NET_HISTORY_LEN];
+        *buf = vec![NetSample::default(); NET_HISTORY_LEN];
     }
     buf.remove(0);
-    buf.push(val);
+    buf.push(NetSample { download, upload });
 }
 
-/// Auto-scale a raw bytes/sec history to 0..1 against its own window peak so the
-/// sparkline always uses the full height (like FinalShell's relative graph).
-fn normalized_model(buf: &[f32]) -> ModelRc<f32> {
-    let max = buf.iter().cloned().fold(1.0_f32, f32::max);
-    let scaled: Vec<f32> = buf.iter().map(|v| (v / max).clamp(0.0, 1.0)).collect();
-    ModelRc::from(Rc::new(VecModel::from(scaled)))
+/// Auto-scale stacked download/upload histories against the peak combined rate.
+/// Both series use the same denominator, preserving their true per-sample ratio.
+fn normalized_net_models(buf: &[NetSample]) -> (ModelRc<f32>, ModelRc<f32>) {
+    let max_total = buf
+        .iter()
+        .map(|sample| sample.download + sample.upload)
+        .fold(1.0_f32, f32::max);
+    let download: Vec<f32> = buf
+        .iter()
+        .map(|sample| (sample.download / max_total).clamp(0.0, 1.0))
+        .collect();
+    let upload: Vec<f32> = buf
+        .iter()
+        .map(|sample| (sample.upload / max_total).clamp(0.0, 1.0))
+        .collect();
+    (
+        ModelRc::from(Rc::new(VecModel::from(download))),
+        ModelRc::from(Rc::new(VecModel::from(upload))),
+    )
 }
 
 /// Build the filesystem-usage model (path, "avail/total", used fraction).
@@ -3877,6 +3908,7 @@ fn proc_rows(procs: &[ProcInfo]) -> Vec<ProcRow> {
         .map(|p| ProcRow {
             pid: p.pid.to_string().into(),
             user: p.user.clone().into(),
+            name: p.name.clone().into(),
             cpu: format!("{:.1}", p.cpu).into(),
             mem: format!("{:.1}", p.mem).into(),
             command: p.command.clone().into(),
@@ -4413,12 +4445,16 @@ fn refresh_sidebar(
     // --- Bottom network graph: always the local machine --------------------
     win.set_net_bot_up(format_bytes_per_sec(snap.net_tx_per_sec).into());
     win.set_net_bot_down(format_bytes_per_sec(snap.net_rx_per_sec).into());
-    win.set_net_bot_history(normalized_model(&local_net_hist.lock().unwrap()));
+    let (local_down_history, local_up_history) =
+        normalized_net_models(&local_net_hist.lock().unwrap());
+    win.set_net_bot_down_history(local_down_history.clone());
+    win.set_net_bot_up_history(local_up_history.clone());
 
     let set_top_local = |win: &AppWindow| {
         win.set_net_top_up(format_bytes_per_sec(snap.net_tx_per_sec).into());
         win.set_net_top_down(format_bytes_per_sec(snap.net_rx_per_sec).into());
-        win.set_net_top_history(normalized_model(&local_net_hist.lock().unwrap()));
+        win.set_net_top_down_history(local_down_history.clone());
+        win.set_net_top_up_history(local_up_history.clone());
         win.set_net_show_selector(false);
         win.set_net_selected("".into());
         win.set_net_ifaces(ModelRc::from(Rc::new(VecModel::<SharedString>::default())));
@@ -4482,7 +4518,9 @@ fn refresh_sidebar(
             let (name, rx, tx) = selected_iface(&st);
             win.set_net_top_up(format_bytes_per_sec(tx).into());
             win.set_net_top_down(format_bytes_per_sec(rx).into());
-            win.set_net_top_history(normalized_model(&st.net_hist));
+            let (down_history, up_history) = normalized_net_models(&st.net_hist);
+            win.set_net_top_down_history(down_history);
+            win.set_net_top_up_history(up_history);
             win.set_net_show_selector(!st.net.is_empty());
             win.set_net_selected(name.into());
             let ifaces: Vec<SharedString> = st.net.iter().map(|e| e.0.clone().into()).collect();
@@ -4664,9 +4702,10 @@ fn apply_session_event_to_window(
                 if st.state != 1 {
                     st.state = 1;
                 }
-                // Append the selected interface's total rate to its sparkline.
+                // Append the selected interface's download/upload rates so each
+                // sparkline bar can stack both while preserving their ratio.
                 let (_, rx, tx) = selected_iface(st);
-                push_ring(&mut st.net_hist, (rx + tx) as f32);
+                push_net_sample(&mut st.net_hist, rx as f32, tx as f32);
             }
             if win.get_active_tab_id().as_str() == tab_id {
                 refresh_sidebar(win, statuses, local, local_net_hist);
@@ -4861,6 +4900,9 @@ fn apply_session_event_to_window(
             user,
             need_user,
             need_password,
+            message,
+            force_prompt,
+            credential_generation,
             responder,
         } => {
             enqueue_cred_prompt(
@@ -4870,6 +4912,9 @@ fn apply_session_event_to_window(
                 user,
                 need_user,
                 need_password,
+                message,
+                force_prompt,
+                credential_generation,
                 responder,
             );
         }
@@ -5070,6 +5115,8 @@ struct PendingCred {
     user: String,
     need_user: bool,
     need_password: bool,
+    message: String,
+    credential_generation: u64,
     responders: Vec<crate::ssh::CredentialResponder>,
 }
 
@@ -5079,6 +5126,17 @@ thread_local! {
     /// connection for the same session is answered without re-prompting.
     static CRED_DECIDED: RefCell<HashMap<String, Option<crate::ssh::CredentialReply>>> =
         RefCell::new(HashMap::new());
+}
+
+fn should_use_cached_credential(
+    reply: &Option<crate::ssh::CredentialReply>,
+    force_prompt: bool,
+    attempted_generation: u64,
+) -> bool {
+    let cached_is_newer = reply
+        .as_ref()
+        .is_some_and(|(_, _, _, generation)| *generation > attempted_generation);
+    !force_prompt || cached_is_newer || reply.is_none()
 }
 
 /// Queue a credential prompt: answer immediately if already decided this run,
@@ -5091,15 +5149,32 @@ fn enqueue_cred_prompt(
     user: String,
     need_user: bool,
     need_password: bool,
+    message: String,
+    force_prompt: bool,
+    credential_generation: u64,
     responder: crate::ssh::CredentialResponder,
 ) {
     if let Some(reply) = CRED_DECIDED.with(|d| d.borrow().get(&session_id).cloned()) {
-        responder.respond(reply);
-        return;
+        if should_use_cached_credential(&reply, force_prompt, credential_generation) {
+            responder.respond(reply);
+            return;
+        }
+        // This connection just tried the current cached answer and the server
+        // rejected it. Remove only that generation. A delayed shell/SFTP peer
+        // can still consume a newer corrected answer without another popup.
+        CRED_DECIDED.with(|d| {
+            d.borrow_mut().remove(&session_id);
+        });
     }
     let show_now = CRED_QUEUE.with(|q| {
         let mut q = q.borrow_mut();
         if let Some(p) = q.iter_mut().find(|p| p.session_id == session_id) {
+            p.need_user |= need_user;
+            p.need_password |= need_password;
+            if !message.is_empty() {
+                p.message = message;
+            }
+            p.credential_generation = p.credential_generation.max(credential_generation);
             p.responders.push(responder);
             return false;
         }
@@ -5110,6 +5185,8 @@ fn enqueue_cred_prompt(
             user,
             need_user,
             need_password,
+            message,
+            credential_generation,
             responders: vec![responder],
         });
         was_empty
@@ -5126,6 +5203,7 @@ fn show_front_cred(win: &AppWindow) {
             win.set_cred_host(p.host.clone().into());
             win.set_cred_need_user(p.need_user);
             win.set_cred_need_password(p.need_password);
+            win.set_cred_message(p.message.clone().into());
             win.set_cred_user(p.user.clone().into());
             win.set_cred_password("".into());
             win.set_cred_remember(false);
@@ -5137,22 +5215,23 @@ fn show_front_cred(win: &AppWindow) {
 /// Apply the user's answer to the front credential prompt (or cancel), persist
 /// it when "remember" is checked, then show the next prompt or close.
 fn resolve_front_cred(win: &AppWindow, accept: bool) {
-    let reply: Option<crate::ssh::CredentialReply> = if accept {
-        Some((
-            win.get_cred_user().to_string(),
-            win.get_cred_password().to_string(),
-            win.get_cred_remember(),
-        ))
-    } else {
-        None
-    };
     let has_next = CRED_QUEUE.with(|q| {
         let mut q = q.borrow_mut();
         if let Some(p) = q.pop_front() {
+            let reply: Option<crate::ssh::CredentialReply> = if accept {
+                Some((
+                    win.get_cred_user().to_string(),
+                    win.get_cred_password().to_string(),
+                    win.get_cred_remember(),
+                    p.credential_generation.saturating_add(1),
+                ))
+            } else {
+                None
+            };
             CRED_DECIDED.with(|d| {
                 d.borrow_mut().insert(p.session_id.clone(), reply.clone());
             });
-            if let Some((ref u, ref pw, true)) = reply {
+            if let Some((ref u, ref pw, true, _)) = reply {
                 persist_credentials(&p.session_id, u, pw, p.need_user, p.need_password);
             }
             for r in &p.responders {
@@ -5163,6 +5242,7 @@ fn resolve_front_cred(win: &AppWindow, accept: bool) {
     });
     // Don't leave the typed password lingering in the UI property.
     win.set_cred_password("".into());
+    win.set_cred_message("".into());
     if has_next {
         show_front_cred(win);
     } else {
@@ -9279,6 +9359,40 @@ mod key_tests {
     use super::*;
 
     #[test]
+    fn credential_retry_uses_only_a_newer_cached_answer() {
+        let current = Some(("root".into(), "new-password".into(), false, 2));
+
+        // A normal second connection (shell/SFTP) shares the cached answer.
+        assert!(should_use_cached_credential(&current, false, 2));
+        // A peer that failed using generation 1 may consume corrected gen 2.
+        assert!(should_use_cached_credential(&current, true, 1));
+        // A connection that already failed with gen 2 must prompt again.
+        assert!(!should_use_cached_credential(&current, true, 2));
+        // Cancelling one shared dialog cancels its peer instead of reopening it.
+        assert!(should_use_cached_credential(&None, true, 2));
+    }
+
+    #[test]
+    fn stacked_network_histories_share_one_scale() {
+        let samples = [
+            NetSample {
+                download: 8.0,
+                upload: 2.0,
+            },
+            NetSample {
+                download: 4.0,
+                upload: 1.0,
+            },
+        ];
+        let (download, upload) = normalized_net_models(&samples);
+
+        assert_eq!(download.row_data(0), Some(0.8));
+        assert_eq!(upload.row_data(0), Some(0.2));
+        assert_eq!(download.row_data(1), Some(0.4));
+        assert_eq!(upload.row_data(1), Some(0.1));
+    }
+
+    #[test]
     fn bare_alt_is_not_forwarded() {
         // Slint sends Alt-alone as key=0x12 with alt=true. It must produce no
         // bytes — otherwise it becomes ESC+0x12 and clears the input (issue #43).
@@ -9409,7 +9523,10 @@ mod selection_tests {
             sftp_entry("dir2", true),
         ];
         sort_sftp_entries(&mut entries, "", 0);
-        assert_eq!(sftp_names(&entries), vec!["dir2", "dir10", "file11", "file100"]);
+        assert_eq!(
+            sftp_names(&entries),
+            vec!["dir2", "dir10", "file11", "file100"]
+        );
     }
 
     fn hist_line(s: &str) -> Line {

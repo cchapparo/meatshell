@@ -286,8 +286,10 @@ impl std::fmt::Debug for HostKeyResponder {
 }
 
 /// The user's answer to a connect-time credential prompt: `(username, password,
-/// remember)`, or `None` if they cancelled.
-pub type CredentialReply = (String, String, bool);
+/// remember, generation)`, or `None` if they cancelled. The generation lets the
+/// shell and SFTP connection share a newly corrected password without either
+/// replaying an older rejected value or opening a duplicate retry dialog.
+pub type CredentialReply = (String, String, bool, u64);
 
 /// Carries the credential prompt's answer back to the blocked auth flow (#110).
 /// `Arc<Mutex<Option<…>>>` so the enclosing [`SessionEvent`] stays `Clone`.
@@ -346,16 +348,31 @@ impl std::fmt::Debug for MfaResponder {
     }
 }
 
-/// One process row sampled from the remote `ps` (#23). CPU/mem are percentages
-/// as reported by `ps` (pcpu/pmem); `command` is the (width-truncated) args.
+/// One process row sampled from the remote process monitor (#23). CPU is the
+/// interval usage calculated from consecutive `/proc/<pid>/stat` snapshots;
+/// memory remains the percentage reported by `ps`.
 #[derive(Debug, Clone)]
 pub struct ProcInfo {
     pub pid: u32,
     pub user: String,
+    pub name: String,
     pub cpu: f32,
     pub mem: f32,
     pub command: String,
 }
+
+#[derive(Debug)]
+struct RawProcSample {
+    pid: u32,
+    user: String,
+    name: String,
+    cpu_ticks: u64,
+    start_ticks: u64,
+    mem: f32,
+    command: String,
+}
+
+type PrevProcTicks = std::collections::HashMap<u32, (u64, u64)>;
 
 /// Events emitted back to the UI thread.
 #[derive(Debug, Clone)]
@@ -388,6 +405,16 @@ pub enum SessionEvent {
         user: String,
         need_user: bool,
         need_password: bool,
+        /// Optional explanation shown above the fields. Authentication retries
+        /// use this to make it clear that the previous credentials were rejected.
+        message: String,
+        /// Ignore the answer cached for this session and ask again. Without this,
+        /// a rejected password would be replayed immediately by the shell/SFTP
+        /// prompt de-duplication cache.
+        force_prompt: bool,
+        /// Generation of the credentials this connection just tried. A cached
+        /// reply with a newer generation can be used without prompting again.
+        credential_generation: u64,
         responder: CredentialResponder,
     },
     /// A keyboard-interactive challenge that isn't the account password —
@@ -605,7 +632,21 @@ async fn connect_ssh(
 pub(crate) enum AuthResult {
     Success,
     Cancelled,
-    Failed,
+}
+
+/// A keyboard-interactive exchange must distinguish a rejected response from a
+/// user closing the MFA dialog. The latter cancels the whole connection instead
+/// of opening another credential prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyboardAuthResult {
+    Success,
+    /// The server rejected the exchange. `user_prompted` is true when the UI
+    /// supplied an MFA/code answer, so the caller can re-open that challenge
+    /// instead of incorrectly asking for the account password.
+    Rejected {
+        user_prompted: bool,
+    },
+    Cancelled,
 }
 
 /// Authenticate an already-connected SSH handle using the session's method,
@@ -621,40 +662,43 @@ pub(crate) async fn authenticate_session(
     config: Arc<client::Config>,
     events: &UnboundedSender<SessionEvent>,
 ) -> Result<AuthResult> {
-    let (user, password) = match resolve_credentials(session, events).await {
-        Some(c) => c,
-        None => return Ok(AuthResult::Cancelled),
-    };
+    let (mut user, mut password, mut credential_generation) =
+        match resolve_credentials(session, events).await {
+            Some(c) => c,
+            None => return Ok(AuthResult::Cancelled),
+        };
 
-    let authed = match session.auth {
-        AuthMethod::Password => {
-            let mut ok = handle
-                .authenticate_password(&user, password.as_str())
-                .await
-                .context("password auth failed")?;
-            if !ok {
-                // russh can't switch auth methods on a handle whose first attempt
-                // already failed (it hangs), so reconnect on a fresh handle before
-                // trying keyboard-interactive (#86).
-                let _ = handle.disconnect(Disconnect::ByApplication, "", "").await;
-                let (h, jh) = Box::pin(connect_ssh(session, jump, config.clone(), events)).await?;
-                *handle = h;
-                *jump_handle = jh;
-                ok = keyboard_interactive_auth(
-                    handle,
-                    &user,
-                    password.as_str(),
-                    &session.id,
-                    &session.host,
-                    events,
-                )
-                .await
-                .context("keyboard-interactive auth failed")?;
+    loop {
+        let result = match session.auth {
+            AuthMethod::Password => {
+                let ok = handle
+                    .authenticate_password(&user, password.as_str())
+                    .await
+                    .context("password auth failed")?;
+                if ok {
+                    KeyboardAuthResult::Success
+                } else {
+                    // russh can't switch auth methods on a handle whose first
+                    // attempt failed (it hangs), so reconnect before trying
+                    // keyboard-interactive (#86).
+                    let _ = handle.disconnect(Disconnect::ByApplication, "", "").await;
+                    let (h, jh) =
+                        Box::pin(connect_ssh(session, jump, config.clone(), events)).await?;
+                    *handle = h;
+                    *jump_handle = jh;
+                    keyboard_interactive_auth(
+                        handle,
+                        &user,
+                        password.as_str(),
+                        &session.id,
+                        &session.host,
+                        events,
+                    )
+                    .await
+                    .context("keyboard-interactive auth failed")?
+                }
             }
-            ok
-        }
-        AuthMethod::KeyboardInteractive => {
-            keyboard_interactive_auth(
+            AuthMethod::KeyboardInteractive => keyboard_interactive_auth(
                 handle,
                 &user,
                 password.as_str(),
@@ -663,29 +707,90 @@ pub(crate) async fn authenticate_session(
                 events,
             )
             .await
-            .context("keyboard-interactive auth failed")?
-        }
-        AuthMethod::Key => {
-            // An encrypted private key needs its passphrase; we reuse the
-            // session's password field for it (empty = unencrypted key) (#90).
-            let pass = password.as_str();
-            let keypair = load_session_private_key(session, pass)?;
-            // RSA keys must be signed with an explicit SHA-2 hash; every other
-            // key type carries its own algorithm, so no override is needed.
-            let hash = keypair.algorithm().is_rsa().then_some(HashAlg::Sha256);
-            let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(keypair), hash)
-                .context("invalid private key / hash algorithm combination")?;
-            handle
-                .authenticate_publickey(&user, key_with_hash)
-                .await
-                .context("publickey auth failed")?
-        }
-    };
+            .context("keyboard-interactive auth failed")?,
+            AuthMethod::Key => {
+                // An encrypted private key needs its passphrase; reuse the
+                // session password field (empty = unencrypted key) (#90).
+                let pass = password.as_str();
+                match load_session_private_key(session, pass) {
+                    Ok(keypair) => {
+                        let hash = keypair.algorithm().is_rsa().then_some(HashAlg::Sha256);
+                        let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(keypair), hash)
+                            .context("invalid private key / hash algorithm combination")?;
+                        if handle
+                            .authenticate_publickey(&user, key_with_hash)
+                            .await
+                            .context("publickey auth failed")?
+                        {
+                            KeyboardAuthResult::Success
+                        } else {
+                            KeyboardAuthResult::Rejected {
+                                user_prompted: false,
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        // A wrong passphrase is reported while decoding the key,
+                        // before any auth request reaches the server. Let the user
+                        // correct it in the same retry dialog.
+                        tracing::warn!("could not load private key for authentication: {err:#}");
+                        KeyboardAuthResult::Rejected {
+                            user_prompted: false,
+                        }
+                    }
+                }
+            }
+        };
 
-    if authed {
-        Ok(AuthResult::Success)
-    } else {
-        Ok(AuthResult::Failed)
+        match result {
+            KeyboardAuthResult::Success => return Ok(AuthResult::Success),
+            KeyboardAuthResult::Cancelled => return Ok(AuthResult::Cancelled),
+            KeyboardAuthResult::Rejected {
+                user_prompted: true,
+            } => {
+                // The password was accepted far enough to reach an MFA/code
+                // prompt. Repeat keyboard-interactive on a fresh handle so the
+                // existing MFA dialog asks for a new code.
+                let _ = handle
+                    .disconnect(Disconnect::ByApplication, "authentication retry", "")
+                    .await;
+                let (h, jh) = Box::pin(connect_ssh(session, jump, config.clone(), events)).await?;
+                *handle = h;
+                *jump_handle = jh;
+                continue;
+            }
+            KeyboardAuthResult::Rejected {
+                user_prompted: false,
+            } => {}
+        }
+
+        let message = match session.auth {
+            AuthMethod::Key => t(
+                "私钥认证失败，请重新输入用户名或密钥口令。",
+                "Key authentication failed. Re-enter the username or key passphrase.",
+            ),
+            _ => t(
+                "认证失败，请重新输入用户名和密码。",
+                "Authentication failed. Re-enter the username and password.",
+            ),
+        };
+        let Some((new_user, new_password, new_generation)) =
+            retry_credentials(session, &user, message, credential_generation, events).await
+        else {
+            return Ok(AuthResult::Cancelled);
+        };
+        user = new_user;
+        password = new_password;
+        credential_generation = new_generation;
+
+        // A failed russh auth handle is not reusable. Every retry starts with a
+        // new transport (and a new jump tunnel when applicable).
+        let _ = handle
+            .disconnect(Disconnect::ByApplication, "authentication retry", "")
+            .await;
+        let (h, jh) = Box::pin(connect_ssh(session, jump, config.clone(), events)).await?;
+        *handle = h;
+        *jump_handle = jh;
     }
 }
 
@@ -723,12 +828,6 @@ where
         AuthResult::Success => {}
         AuthResult::Cancelled => {
             return Err(anyhow!(t("跳板机登录已取消", "jump host login cancelled")))
-        }
-        AuthResult::Failed => {
-            return Err(anyhow!(t(
-                "跳板机认证失败",
-                "jump host authentication failed"
-            )))
         }
     }
     let channel = jhandle
@@ -846,20 +945,6 @@ async fn run_session(
                 .await;
             return Ok(());
         }
-        AuthResult::Failed => {
-            tracing::warn!(
-                "ssh authentication failed for {}@{}",
-                session.user,
-                session.host
-            );
-            let _ = events.send(SessionEvent::Closed(
-                t("认证失败", "authentication failed").into(),
-            ));
-            let _ = handle
-                .disconnect(Disconnect::ByApplication, "auth failed", "")
-                .await;
-            return Ok(());
-        }
     };
 
     // Keep the jump-host connection alive for the whole session — the direct-tcpip
@@ -965,11 +1050,12 @@ async fn run_session(
     // more portable than hardcoding one absolute path per tool (their location
     // differs across distros). Monitoring is best-effort, so even if this shell
     // is unusual and the reset finds nothing, only the sidebar stats are lost.
-    // The `ps` section feeds the process monitor (#23): top-40 by CPU, columns
-    // pid/user/pcpu/pmem/args, each line clipped to 200 chars so a giant command
-    // line can't bloat the stream. A host whose `ps` lacks `--sort`/`-o` simply
-    // yields nothing (2>/dev/null), degrading to an empty process list.
-    const MON_CMD: &[u8] = b"PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH; while :; do awk '/^cpu /{print}' /proc/stat; awk '/^(MemTotal|MemAvailable|SwapTotal|SwapFree):/{print}' /proc/meminfo; cat /proc/net/dev; echo __DF__; df -kP 2>/dev/null; echo __PS__; ps -eo pid,user,pcpu,pmem,args --sort=-pcpu 2>/dev/null | head -n 41 | cut -c -200; echo __MSTICK__; sleep 2; done\n";
+    // The `ps` section feeds the process monitor (#23). `ps` supplies the
+    // candidate metadata while cumulative utime+stime and process start ticks
+    // come from /proc/<pid>/stat. Rust compares consecutive samples to produce
+    // interval CPU%, then re-sorts the candidates by that live value. Each line
+    // is clipped to 200 chars so a giant command line cannot bloat the stream.
+    const MON_CMD: &[u8] = b"PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH; clk_tck=$(getconf CLK_TCK 2>/dev/null || echo 100); while :; do awk '/^cpu /{print}' /proc/stat; echo __CLK_TCK__ $clk_tck; awk '/^(MemTotal|MemAvailable|SwapTotal|SwapFree):/{print}' /proc/meminfo; cat /proc/net/dev; echo __DF__; df -kP 2>/dev/null; echo __PS__; ps -eo pid=,user=,pcpu=,pmem=,comm=,args= --sort=-pcpu 2>/dev/null | head -n 40 | while read -r pid user _pcpu pmem comm args; do stat=$(cat \"/proc/$pid/stat\" 2>/dev/null) || continue; rest=${stat##*) }; set -- $rest; ticks=$((${12}+${13})); start=${20}; printf '%s %s %s %s %s %s %s\\n' \"$pid\" \"$user\" \"$ticks\" \"$start\" \"$pmem\" \"$comm\" \"$args\"; done | cut -c -200; echo __MSTICK__; sleep 2; done\n";
     // Skip the resource monitor entirely when shell integration is off (a
     // non-POSIX / Windows server) — the /proc-based loop only spews errors there
     // (#140).
@@ -995,6 +1081,8 @@ async fn run_session(
     let mut prev_net: std::collections::HashMap<String, (u64, u64)> =
         std::collections::HashMap::new(); // iface -> (rx_bytes, tx_bytes)
     let mut prev_net_at = std::time::Instant::now();
+    let mut prev_procs = PrevProcTicks::new(); // pid -> (start_ticks, cpu_ticks)
+    let mut prev_procs_at = std::time::Instant::now();
 
     // --- Port forwarding / tunnels (#56) --------------------------------
     // Remote (-R) first, while we still hold `handle` mutably (tcpip_forward
@@ -1255,6 +1343,8 @@ async fn run_session(
                                 &mut prev_cpu,
                                 &mut prev_net,
                                 &mut prev_net_at,
+                                &mut prev_procs,
+                                &mut prev_procs_at,
                             ) {
                                 let _ = events.send(stats);
                             }
@@ -1306,6 +1396,8 @@ fn parse_monitor_block(
     prev: &mut Option<(u64, u64)>,
     prev_net: &mut std::collections::HashMap<String, (u64, u64)>,
     prev_net_at: &mut std::time::Instant,
+    prev_procs: &mut PrevProcTicks,
+    prev_procs_at: &mut std::time::Instant,
 ) -> Option<SessionEvent> {
     let mut cpu_total = 0u64;
     let mut cpu_idle = 0u64;
@@ -1324,8 +1416,10 @@ fn parse_monitor_block(
     // into a Set: skip a (total, available) we've already shown. `df` lists the real
     // mount first, so that's the one kept.
     let mut seen_fs: std::collections::HashSet<(u64, u64)> = std::collections::HashSet::new();
-    // Processes from `ps` (#23): top-by-CPU rows.
-    let mut procs: Vec<ProcInfo> = Vec::new();
+    // Raw process counters; converted to interval CPU% after the full sample is
+    // parsed so every row uses the same elapsed duration.
+    let mut raw_procs: Vec<RawProcSample> = Vec::new();
+    let mut clock_ticks_per_sec = 100u64;
     // The sample is split into sections by `echo` markers; everything before the
     // first marker is the cpu/mem/net block.
     enum Section {
@@ -1364,9 +1458,9 @@ fn parse_monitor_block(
                 continue;
             }
             Section::Ps => {
-                if procs.len() < MAX_MON_ENTRIES {
-                    if let Some(p) = parse_ps_line(line) {
-                        procs.push(p);
+                if raw_procs.len() < MAX_MON_ENTRIES {
+                    if let Some(p) = parse_proc_tick_line(line) {
+                        raw_procs.push(p);
                     }
                 }
                 continue;
@@ -1386,6 +1480,8 @@ fn parse_monitor_block(
                 cpu_idle = nums[3].saturating_add(nums.get(4).copied().unwrap_or(0)); // idle + iowait
                 have_cpu = true;
             }
+        } else if let Some(v) = line.strip_prefix("__CLK_TCK__") {
+            clock_ticks_per_sec = v.trim().parse::<u64>().unwrap_or(100).max(1);
         } else if let Some(v) = line.strip_prefix("MemTotal:") {
             mem_total = parse_meminfo_kib(v);
         } else if let Some(v) = line.strip_prefix("MemAvailable:") {
@@ -1421,6 +1517,41 @@ fn parse_monitor_block(
         // Show busiest first so the default-selected NIC is the active one.
         net.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)));
     }
+
+    // Convert cumulative process ticks to CPU used during this sampling window.
+    // Linux exposes utime/stime in CLK_TCK units, so one fully occupied core is
+    // delta_ticks / (CLK_TCK * elapsed) == 100%. Multi-threaded processes may
+    // legitimately exceed 100%, matching tools such as top.
+    let proc_elapsed = now.duration_since(*prev_procs_at).as_secs_f64().max(0.001);
+    let mut current_proc_ticks = PrevProcTicks::new();
+    let mut procs: Vec<ProcInfo> = raw_procs
+        .into_iter()
+        .map(|p| {
+            let cpu = match prev_procs.get(&p.pid) {
+                Some((previous_start, previous_ticks)) if *previous_start == p.start_ticks => {
+                    let delta = p.cpu_ticks.saturating_sub(*previous_ticks);
+                    (delta as f64 / clock_ticks_per_sec as f64 / proc_elapsed * 100.0) as f32
+                }
+                _ => 0.0,
+            };
+            current_proc_ticks.insert(p.pid, (p.start_ticks, p.cpu_ticks));
+            ProcInfo {
+                pid: p.pid,
+                user: p.user,
+                name: p.name,
+                cpu,
+                mem: p.mem,
+                command: p.command,
+            }
+        })
+        .collect();
+    *prev_procs = current_proc_ticks;
+    *prev_procs_at = now;
+    procs.sort_by(|a, b| {
+        b.cpu
+            .partial_cmp(&a.cpu)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let cpu_percent = if have_cpu {
         let result = match *prev {
@@ -1458,24 +1589,27 @@ fn parse_monitor_block(
     })
 }
 
-/// Parse one `ps -eo pid,user,pcpu,pmem,args` line into a [`ProcInfo`]. The
-/// header row (`PID` is not numeric) and any malformed line yield `None`.
-/// `args` (everything past the four fixed columns) keeps internal spacing
-/// collapsed — fine for a display-only command column.
-fn parse_ps_line(line: &str) -> Option<ProcInfo> {
+/// Parse `pid user cpu_ticks start_ticks pmem comm args` from the monitor loop.
+/// Malformed/raced-away processes yield `None`; args whitespace is collapsed,
+/// which is fine for the display-only command column.
+fn parse_proc_tick_line(line: &str) -> Option<RawProcSample> {
     let mut it = line.split_whitespace();
     let pid: u32 = it.next()?.parse().ok()?;
     let user = it.next()?.to_string();
-    let cpu: f32 = it.next()?.parse().ok()?;
+    let cpu_ticks: u64 = it.next()?.parse().ok()?;
+    let start_ticks: u64 = it.next()?.parse().ok()?;
     let mem: f32 = it.next()?.parse().ok()?;
+    let name = it.next()?.to_string();
     let command = it.collect::<Vec<_>>().join(" ");
     if command.is_empty() {
         return None;
     }
-    Some(ProcInfo {
+    Some(RawProcSample {
         pid,
         user,
-        cpu,
+        name,
+        cpu_ticks,
+        start_ticks,
         mem,
         command,
     })
@@ -1571,7 +1705,7 @@ pub(crate) async fn keyboard_interactive_auth<H>(
     session_id: &str,
     host: &str,
     events: &UnboundedSender<SessionEvent>,
-) -> Result<bool>
+) -> Result<KeyboardAuthResult>
 where
     H: Handler + 'static,
     H::Error: std::error::Error + Send + Sync + 'static,
@@ -1581,11 +1715,12 @@ where
         .authenticate_keyboard_interactive_start(user.to_string(), None)
         .await?;
     let mut password_used = false;
+    let mut user_prompted = false;
     // Bound the exchange so a misbehaving server can't loop us forever.
     for _ in 0..16 {
         match res {
-            Kb::Success => return Ok(true),
-            Kb::Failure => return Ok(false),
+            Kb::Success => return Ok(KeyboardAuthResult::Success),
+            Kb::Failure => return Ok(KeyboardAuthResult::Rejected { user_prompted }),
             Kb::InfoRequest { prompts, .. } => {
                 let mut responses = Vec::with_capacity(prompts.len());
                 for p in &prompts {
@@ -1595,9 +1730,10 @@ where
                         responses.push(password.to_string());
                         password_used = true;
                     } else {
+                        user_prompted = true;
                         match ask_mfa_prompt(session_id, host, &p.prompt, p.echo, events).await {
                             Some(answer) => responses.push(answer),
-                            None => return Ok(false), // user cancelled
+                            None => return Ok(KeyboardAuthResult::Cancelled),
                         }
                     }
                 }
@@ -1607,7 +1743,7 @@ where
             }
         }
     }
-    Ok(false)
+    Ok(KeyboardAuthResult::Rejected { user_prompted })
 }
 
 /// Ask the UI for a single keyboard-interactive answer (an MFA / verification
@@ -1693,13 +1829,13 @@ pub(crate) async fn verify_host_key(
 pub(crate) async fn resolve_credentials(
     session: &Session,
     events: &UnboundedSender<SessionEvent>,
-) -> Option<(String, String)> {
+) -> Option<(String, String, u64)> {
     let mut user = session.user.trim().to_string();
     let mut password = session.password.as_str().to_string();
     let need_user = user.is_empty();
     let need_password = matches!(session.auth, AuthMethod::Password) && password.is_empty();
     if !(need_user || need_password) {
-        return Some((user, password));
+        return Some((user, password, 0));
     }
     let (tx, rx) = tokio::sync::oneshot::channel();
     let sent = events.send(SessionEvent::CredentialPrompt {
@@ -1708,20 +1844,56 @@ pub(crate) async fn resolve_credentials(
         user: user.clone(),
         need_user,
         need_password,
+        message: String::new(),
+        force_prompt: false,
+        credential_generation: 0,
         responder: CredentialResponder::new(tx),
     });
     if sent.is_err() {
-        return Some((user, password));
+        return Some((user, password, 0));
     }
     match rx.await {
-        Ok(Some((u, p, _remember))) => {
+        Ok(Some((u, p, _remember, generation))) => {
             if need_user {
                 user = u.trim().to_string();
             }
             if need_password {
                 password = p;
             }
-            Some((user, password))
+            Some((user, password, generation))
+        }
+        _ => None,
+    }
+}
+
+/// Ask for replacement credentials after the server rejected an auth attempt.
+/// This deliberately bypasses the per-session prompt cache so the rejected
+/// password/passphrase is never submitted again without user input.
+pub(crate) async fn retry_credentials(
+    session: &Session,
+    user: &str,
+    message: &str,
+    credential_generation: u64,
+    events: &UnboundedSender<SessionEvent>,
+) -> Option<(String, String, u64)> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let sent = events.send(SessionEvent::CredentialPrompt {
+        session_id: session.id.clone(),
+        host: session.host.clone(),
+        user: user.to_string(),
+        need_user: true,
+        need_password: true,
+        message: message.to_string(),
+        force_prompt: true,
+        credential_generation,
+        responder: CredentialResponder::new(tx),
+    });
+    if sent.is_err() {
+        return None;
+    }
+    match rx.await {
+        Ok(Some((new_user, new_password, _remember, generation))) => {
+            Some((new_user.trim().to_string(), new_password, generation))
         }
         _ => None,
     }
@@ -1824,9 +1996,9 @@ mod osc_command_tests {
 
 #[cfg(test)]
 mod monitor_hardening_tests {
-    use super::{parse_df_line, parse_monitor_block};
+    use super::{parse_df_line, parse_monitor_block, PrevProcTicks, SessionEvent};
     use std::collections::HashMap;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn df_line_saturates_instead_of_overflowing() {
@@ -1845,8 +2017,18 @@ mod monitor_hardening_tests {
         let mut prev = None;
         let mut prev_net = HashMap::new();
         let mut at = Instant::now();
+        let mut prev_procs = PrevProcTicks::new();
+        let mut procs_at = Instant::now();
         // Must not panic; with no baseline the first sample reports 0% CPU.
-        assert!(parse_monitor_block(&block, &mut prev, &mut prev_net, &mut at).is_some());
+        assert!(parse_monitor_block(
+            &block,
+            &mut prev,
+            &mut prev_net,
+            &mut at,
+            &mut prev_procs,
+            &mut procs_at,
+        )
+        .is_some());
     }
 
     #[test]
@@ -1858,9 +2040,72 @@ mod monitor_hardening_tests {
         let mut prev = None;
         let mut prev_net = HashMap::new();
         let mut at = Instant::now();
-        assert!(parse_monitor_block(&block, &mut prev, &mut prev_net, &mut at).is_some());
+        let mut prev_procs = PrevProcTicks::new();
+        let mut procs_at = Instant::now();
+        assert!(parse_monitor_block(
+            &block,
+            &mut prev,
+            &mut prev_net,
+            &mut at,
+            &mut prev_procs,
+            &mut procs_at,
+        )
+        .is_some());
         // The remembered interface set is capped, not 500.
         assert!(prev_net.len() <= 64, "prev_net held {}", prev_net.len());
+    }
+
+    #[test]
+    fn process_cpu_uses_interval_ticks_and_resorts() {
+        let first = "cpu 100 0 100 800\n\
+                     __CLK_TCK__ 100\n\
+                     MemTotal: 1000 kB\n\
+                     MemAvailable: 500 kB\n\
+                     __PS__\n\
+                     10 root 100 1000 1.0 slow /usr/bin/slow --watch\n\
+                     20 root 200 2000 2.0 busy /usr/bin/busy --workers 4";
+        let second = "cpu 150 0 150 900\n\
+                      __CLK_TCK__ 100\n\
+                      MemTotal: 1000 kB\n\
+                      MemAvailable: 500 kB\n\
+                      __PS__\n\
+                      10 root 110 1000 1.0 slow /usr/bin/slow --watch\n\
+                      20 root 300 2000 2.0 busy /usr/bin/busy --workers 4";
+        let mut prev = None;
+        let mut prev_net = HashMap::new();
+        let mut net_at = Instant::now();
+        let mut prev_procs = PrevProcTicks::new();
+        let mut procs_at = Instant::now();
+
+        let _ = parse_monitor_block(
+            first,
+            &mut prev,
+            &mut prev_net,
+            &mut net_at,
+            &mut prev_procs,
+            &mut procs_at,
+        )
+        .expect("first sample");
+        procs_at = Instant::now() - Duration::from_secs(2);
+        let event = parse_monitor_block(
+            second,
+            &mut prev,
+            &mut prev_net,
+            &mut net_at,
+            &mut prev_procs,
+            &mut procs_at,
+        )
+        .expect("second sample");
+
+        let SessionEvent::ResourceStats { procs, .. } = event else {
+            panic!("expected resource stats");
+        };
+        assert_eq!(procs[0].pid, 20, "largest interval delta sorts first");
+        assert_eq!(procs[0].name, "busy");
+        assert_eq!(procs[0].command, "/usr/bin/busy --workers 4");
+        assert!((45.0..=55.0).contains(&procs[0].cpu));
+        assert_eq!(procs[1].pid, 10);
+        assert!((4.0..=6.0).contains(&procs[1].cpu));
     }
 }
 

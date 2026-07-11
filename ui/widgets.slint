@@ -162,21 +162,39 @@ export component LabeledInput inherits VerticalLayout {
 }
 
 // --- Sparkline -------------------------------------------------------------
-// Compact horizontal bar chart used in the stats sidebar.
+// Compact stacked horizontal bar chart used in the stats sidebar. Each sample
+// shares one column: download is green at the bottom, upload is orange above it.
 export component Sparkline inherits Rectangle {
-    in property <[float]> values;
-    in property <brush> line-color: Theme.accent;
+    in property <[float]> upload-values;
+    in property <[float]> download-values;
+    in property <brush> upload-color: Theme.warning;
+    in property <brush> download-color: Theme.success;
+    property <int> sample-count: max(upload-values.length, download-values.length);
 
     background: Theme.bg-root;
     border-radius: Theme.radius-sm;
     clip: true;
 
-    for v[i] in values : Rectangle {
-        x: i * (parent.width / max(1, values.length));
-        y: parent.height - (parent.height * clamp(v, 0.0, 1.0));
-        width: (parent.width / max(1, values.length)) - 1px;
-        height: parent.height * clamp(v, 0.0, 1.0);
-        background: line-color.with-alpha(0.85);
+    // Download segment: anchored to the bottom of the column.
+    for download[i] in download-values : Rectangle {
+        x: i * (parent.width / max(1, root.sample-count));
+        y: parent.height - (parent.height * clamp(download, 0.0, 1.0));
+        width: (parent.width / max(1, root.sample-count)) - 1px;
+        height: parent.height * clamp(download, 0.0, 1.0);
+        background: download-color.with-alpha(0.88);
+        border-radius: 1px;
+    }
+
+    // Upload segment: starts exactly where the download segment ends.
+    for upload[i] in upload-values : Rectangle {
+        property <float> download: i < root.download-values.length
+            ? clamp(root.download-values[i], 0.0, 1.0) : 0.0;
+        property <float> upload-height: clamp(upload, 0.0, 1.0);
+        x: i * (parent.width / max(1, root.sample-count));
+        y: parent.height - (parent.height * clamp(self.download + self.upload-height, 0.0, 1.0));
+        width: (parent.width / max(1, root.sample-count)) - 1px;
+        height: parent.height * self.upload-height;
+        background: upload-color.with-alpha(0.9);
         border-radius: 1px;
     }
 }

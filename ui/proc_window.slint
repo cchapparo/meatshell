@@ -13,6 +13,7 @@ import { Theme } from "theme.slint";
 export struct ProcRow {
     pid: string,
     user: string,
+    name: string,      // executable name from ps `comm`
     cpu: string,       // "12.3" (percent, one decimal)
     mem: string,       // "4.5"
     command: string,   // truncated args

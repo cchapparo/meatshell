@@ -746,17 +746,15 @@ export component TerminalView inherits Rectangle {
                     // So `control` already gives ⌘ shortcuts on macOS for free, and
                     // the physical Ctrl (meta on macOS) is what must reach the shell
                     // so ^C/^X work in nano/vim (#158).
+                    // ── Jump to command-history search: Alt ──
+                    if (event.text == Key.Alt) {
+                        root.history-open = true;
+                        accept
                     // ── Find: ⌘F / Ctrl+F (mirrors right-click → Find) ──
-                    if (event.modifiers.control && !event.modifiers.shift
+                    } else if (event.modifiers.control && !event.modifiers.shift
                             && (event.text == "f" || event.text == "F"
                                 || event.text == "\u{0006}")) {
                         root.find-active = true;
-                        accept
-                    // ── Jump to command-history search: ⌘⇧R / Ctrl+Shift+R (#140) ──
-                    } else if (event.modifiers.control && event.modifiers.shift
-                            && (event.text == "r" || event.text == "R"
-                                || event.text == "\u{0012}")) {
-                        root.history-open = true;
                         accept
                     // ── Copy: ⌘C (macOS, no Shift) / Ctrl+Shift+C ──
                     } else if (event.modifiers.control

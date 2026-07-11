@@ -315,6 +315,52 @@ async fn sync_tree_dir(
 // Worker
 // ---------------------------------------------------------------------------
 
+/// Open the dedicated SFTP SSH transport. Authentication retries must replace
+/// the entire russh handle, and a jump-host connection must be kept alive with
+/// the returned target handle.
+async fn connect_sftp_transport(
+    session: &Session,
+    jump: Option<&Session>,
+    config: Arc<client::Config>,
+    events: &UnboundedSender<SessionEvent>,
+) -> Result<(
+    client::Handle<SftpClientHandler>,
+    Option<client::Handle<crate::ssh::ClientHandler>>,
+)> {
+    let addr = format!("{}:{}", session.host, session.port);
+    match jump {
+        Some(j) => {
+            let (handle, jump_handle) = crate::ssh::connect_target_via_jump(
+                j,
+                &session.host,
+                session.port,
+                config,
+                sftp_handler(session, events),
+                events,
+            )
+            .await
+            .with_context(|| format!("sftp connect {addr} via jump failed"))?;
+            Ok((handle, Some(jump_handle)))
+        }
+        None => {
+            let handle = match crate::proxy::resolve(&session.proxy) {
+                Some(proxy) => {
+                    let stream = crate::proxy::connect(&proxy, &session.host, session.port)
+                        .await
+                        .with_context(|| format!("sftp proxy connect {addr} failed"))?;
+                    client::connect_stream(config, stream, sftp_handler(session, events))
+                        .await
+                        .with_context(|| format!("sftp connect {addr} failed"))?
+                }
+                None => client::connect(config, addr.as_str(), sftp_handler(session, events))
+                    .await
+                    .with_context(|| format!("sftp connect {addr} failed"))?,
+            };
+            Ok((handle, None))
+        }
+    }
+}
+
 async fn run_sftp(
     session: Session,
     jump: Option<Session>,
@@ -345,154 +391,127 @@ async fn run_sftp(
         ..<_>::default()
     });
 
-    let addr = format!("{}:{}", session.host, session.port);
-    // Keep the jump-host connection alive for the whole SFTP session — the
-    // direct-tcpip tunnel rides on it (#211). Declared here so it lives to the
-    // end of the function; `_`-prefixed so it isn't flagged unused.
-    let mut _jump_keepalive;
-    // Tunnel through an SSH jump host (#211), the same proxy as the shell (#7),
-    // or connect directly.
-    let mut handle = match &jump {
-        Some(j) => {
-            let (h, jh) = crate::ssh::connect_target_via_jump(
-                j,
-                &session.host,
-                session.port,
-                config.clone(),
-                sftp_handler(&session, &events),
-                &events,
-            )
-            .await
-            .with_context(|| format!("sftp connect {} via jump failed", addr))?;
-            _jump_keepalive = Some(jh);
-            h
-        }
-        None => {
-            _jump_keepalive = None;
-            match crate::proxy::resolve(&session.proxy) {
-                Some(p) => {
-                    let stream = crate::proxy::connect(&p, &session.host, session.port)
-                        .await
-                        .with_context(|| format!("sftp proxy connect {} failed", addr))?;
-                    client::connect_stream(config.clone(), stream, sftp_handler(&session, &events))
-                        .await
-                        .with_context(|| format!("sftp connect {} failed", addr))?
-                }
-                None => client::connect(
-                    config.clone(),
-                    addr.as_str(),
-                    sftp_handler(&session, &events),
-                )
-                .await
-                .with_context(|| format!("sftp connect {} failed", addr))?,
-            }
-        }
-    };
+    let (mut handle, mut _jump_keepalive) =
+        connect_sftp_transport(&session, jump.as_ref(), config.clone(), &events).await?;
 
     // Resolve missing username/password (shares the shell's prompt; the UI
     // de-dupes by session id so SFTP doesn't prompt a second time) (#110).
-    let (user, password) = match crate::ssh::resolve_credentials(&session, &events).await {
-        Some(c) => c,
-        None => return Err(anyhow!(t("已取消登录", "login cancelled"))),
-    };
+    let (mut user, mut password, mut credential_generation) =
+        match crate::ssh::resolve_credentials(&session, &events).await {
+            Some(c) => c,
+            None => return Err(anyhow!(t("已取消登录", "login cancelled"))),
+        };
 
     // --- Authenticate (same method as the shell session) -------------------
-    let authed = match session.auth {
-        AuthMethod::Password => {
-            let mut ok = handle
-                .authenticate_password(&user, password.as_str())
-                .await
-                .context("sftp password auth failed")?;
-            if !ok {
-                // Match the shell session's fallback: russh can hang if a second
-                // auth method is attempted on the same failed handle, so reconnect
-                // before trying keyboard-interactive (#86, #186).
-                let _ = handle.disconnect(Disconnect::ByApplication, "", "").await;
-                handle = match &jump {
-                    Some(j) => {
-                        let (h, jh) = crate::ssh::connect_target_via_jump(
-                            j,
-                            &session.host,
-                            session.port,
-                            config.clone(),
-                            sftp_handler(&session, &events),
-                            &events,
-                        )
+    loop {
+        let result = match session.auth {
+            AuthMethod::Password => {
+                if handle
+                    .authenticate_password(&user, password.as_str())
+                    .await
+                    .context("sftp password auth failed")?
+                {
+                    crate::ssh::KeyboardAuthResult::Success
+                } else {
+                    // Match the shell fallback on a fresh handle (#86, #186).
+                    let _ = handle.disconnect(Disconnect::ByApplication, "", "").await;
+                    (handle, _jump_keepalive) =
+                        connect_sftp_transport(&session, jump.as_ref(), config.clone(), &events)
+                            .await?;
+                    crate::ssh::keyboard_interactive_auth(
+                        &mut handle,
+                        &user,
+                        password.as_str(),
+                        &session.id,
+                        &session.host,
+                        &events,
+                    )
+                    .await
+                    .context("sftp keyboard-interactive auth failed")?
+                }
+            }
+            AuthMethod::KeyboardInteractive => crate::ssh::keyboard_interactive_auth(
+                &mut handle,
+                &user,
+                password.as_str(),
+                &session.id,
+                &session.host,
+                &events,
+            )
+            .await
+            .context("sftp keyboard-interactive auth failed")?,
+            AuthMethod::Key => match crate::ssh::load_session_private_key(&session, &password) {
+                Ok(keypair) => {
+                    let hash = keypair.algorithm().is_rsa().then_some(HashAlg::Sha256);
+                    let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(keypair), hash)
+                        .context("invalid private key")?;
+                    if handle
+                        .authenticate_publickey(&user, key_with_hash)
                         .await
-                        .with_context(|| format!("sftp reconnect {} via jump failed", addr))?;
-                        _jump_keepalive = Some(jh);
-                        h
-                    }
-                    None => {
-                        _jump_keepalive = None;
-                        match crate::proxy::resolve(&session.proxy) {
-                            Some(p) => {
-                                let stream = crate::proxy::connect(&p, &session.host, session.port)
-                                    .await
-                                    .with_context(|| {
-                                        format!("sftp proxy reconnect {} failed", addr)
-                                    })?;
-                                client::connect_stream(
-                                    config.clone(),
-                                    stream,
-                                    sftp_handler(&session, &events),
-                                )
-                                .await
-                                .with_context(|| format!("sftp reconnect {} failed", addr))?
-                            }
-                            None => client::connect(
-                                config.clone(),
-                                addr.as_str(),
-                                sftp_handler(&session, &events),
-                            )
-                            .await
-                            .with_context(|| format!("sftp reconnect {} failed", addr))?,
+                        .context("sftp publickey auth failed")?
+                    {
+                        crate::ssh::KeyboardAuthResult::Success
+                    } else {
+                        crate::ssh::KeyboardAuthResult::Rejected {
+                            user_prompted: false,
                         }
                     }
-                };
-                ok = crate::ssh::keyboard_interactive_auth(
-                    &mut handle,
-                    &user,
-                    password.as_str(),
-                    &session.id,
-                    &session.host,
-                    &events,
-                )
-                .await
-                .context("sftp keyboard-interactive auth failed")?;
-            }
-            ok
-        }
-        AuthMethod::KeyboardInteractive => crate::ssh::keyboard_interactive_auth(
-            &mut handle,
-            &user,
-            password.as_str(),
-            &session.id,
-            &session.host,
-            &events,
-        )
-        .await
-        .context("sftp keyboard-interactive auth failed")?,
-        AuthMethod::Key => {
-            // An encrypted private key needs its passphrase; reuse the session's
-            // password field for it (empty = unencrypted), exactly like the shell
-            // session does — otherwise a passphrase-protected key authenticates the
-            // shell but fails SFTP with "the key is encrypted" (#133).
-            let pass = password.as_str();
-            let keypair = crate::ssh::load_session_private_key(&session, pass)?;
-            // RSA keys need an explicit SHA-2 hash; other key types don't.
-            let hash = keypair.algorithm().is_rsa().then_some(HashAlg::Sha256);
-            let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(keypair), hash)
-                .context("invalid private key")?;
-            handle
-                .authenticate_publickey(&user, key_with_hash)
-                .await
-                .context("sftp publickey auth failed")?
-        }
-    };
+                }
+                Err(err) => {
+                    tracing::warn!("could not load SFTP private key: {err:#}");
+                    crate::ssh::KeyboardAuthResult::Rejected {
+                        user_prompted: false,
+                    }
+                }
+            },
+        };
 
-    if !authed {
-        return Err(anyhow!(t("SFTP 认证失败", "SFTP authentication failed")));
+        match result {
+            crate::ssh::KeyboardAuthResult::Success => break,
+            crate::ssh::KeyboardAuthResult::Cancelled => {
+                return Err(anyhow!(t("已取消登录", "login cancelled")))
+            }
+            crate::ssh::KeyboardAuthResult::Rejected {
+                user_prompted: true,
+            } => {
+                let _ = handle
+                    .disconnect(Disconnect::ByApplication, "authentication retry", "")
+                    .await;
+                (handle, _jump_keepalive) =
+                    connect_sftp_transport(&session, jump.as_ref(), config.clone(), &events)
+                        .await?;
+                continue;
+            }
+            crate::ssh::KeyboardAuthResult::Rejected {
+                user_prompted: false,
+            } => {}
+        }
+
+        let message = match session.auth {
+            AuthMethod::Key => t(
+                "私钥认证失败，请重新输入用户名或密钥口令。",
+                "Key authentication failed. Re-enter the username or key passphrase.",
+            ),
+            _ => t(
+                "认证失败，请重新输入用户名和密码。",
+                "Authentication failed. Re-enter the username and password.",
+            ),
+        };
+        let Some((new_user, new_password, new_generation)) =
+            crate::ssh::retry_credentials(&session, &user, message, credential_generation, &events)
+                .await
+        else {
+            return Err(anyhow!(t("已取消登录", "login cancelled")));
+        };
+        user = new_user;
+        password = new_password;
+        credential_generation = new_generation;
+
+        let _ = handle
+            .disconnect(Disconnect::ByApplication, "authentication retry", "")
+            .await;
+        (handle, _jump_keepalive) =
+            connect_sftp_transport(&session, jump.as_ref(), config.clone(), &events).await?;
     }
 
     // --- Open the sftp subsystem channel -----------------------------------

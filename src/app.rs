@@ -7502,27 +7502,16 @@ fn wire_key_input(
         let weak = window.as_weak();
         window.on_term_select_end(move |tab_id: SharedString| {
             let tid = tab_id.to_string();
-            // Extract the selected text; a zero-area selection (a plain click)
-            // is cleared instead of copied.
-            let text = with_term_buf(&bufs_sel, &tid, |buf| {
+            // Clear a zero-area selection (a plain click). Non-empty selections
+            // remain highlighted until the user copies them explicitly.
+            with_term_buf(&bufs_sel, &tid, |buf| {
                 let extracted = buf.extract_selection_text();
                 if extracted.is_empty() {
                     // Zero-area selection (a plain click) → clear it.
                     buf.sel_anchor = None;
                     buf.sel_focus = None;
-                    None
-                } else {
-                    Some(extracted)
                 }
-            })
-            .flatten();
-            match text {
-                Some(t) if !t.is_empty() => {
-                    // Auto-copy on release (select-to-copy, PuTTY style).
-                    std::thread::spawn(move || clipboard_set_text(t));
-                }
-                _ => {}
-            }
+            });
             if let Some(win) = weak.upgrade() {
                 rebuild_tab_display(&win, &bufs_sel, &tid);
             }

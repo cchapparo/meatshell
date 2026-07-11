@@ -206,7 +206,7 @@ export component TerminalView inherits Rectangle {
     callback terminal-scroll-to(int);       // jump to an absolute scrollback offset (#103)
     callback select-start(int, int);        // begin drag-selection at (row, col)
     callback select-update(int, int);       // extend drag-selection to (row, col)
-    callback select-end();                  // finish selection → copy to clipboard
+    callback select-end();                  // finish selection
     callback select-autoscroll(int);        // auto-scroll while dragging past edge (dir: -1 up / +1 down)
 
     // Right-click context-menu anchor + find-bar visibility (private UI state).
@@ -952,6 +952,19 @@ export component TerminalView inherits Rectangle {
                     }
                 }
 
+                // History toggle.
+                Rectangle {
+                    width: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: hist-ta.has-hover || root.history-open ? Theme.bg-hover : Theme.bg-elevated;
+                    hist-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.quick-open = false; root.history-open = !root.history-open; }
+                    }
+                    Text { text: "\u{E5CE}"; font-family: "Material Icons"; color: Theme.text-secondary;
+                           font-size: Theme.fs-md; horizontal-alignment: center; vertical-alignment: center; }
+                }
+
                 // Command input.
                 Rectangle {
                     horizontal-stretch: 1;
@@ -975,16 +988,10 @@ export component TerminalView inherits Rectangle {
                             root.history-cursor = -1;
                         }
                         key-pressed(e) => {
-                            // ⌘R / Ctrl+R opens the searchable history dropdown and
-                            // focuses its search box — full keyboard history recall
-                            // (#140). Esc closes it / returns to terminal. (The
-                            // Ctrl+A/E/K/U line-editing below stays on Ctrl — those
-                            // are the standard readline bindings on macOS too.)
-                            if ((Theme.is-mac ? e.modifiers.meta : e.modifiers.control)
-                                    && (e.text == "r" || e.text == "R" || e.text == "\u{0012}")) {
-                                root.history-open = true;
-                                accept
-                            } else if (e.text == Key.Escape) {
+                            // Keep only unmodified command-box navigation here.
+                            // Modifier-based editing falls through to TextInput's
+                            // standard platform behavior.
+                            if (e.text == Key.Escape) {
                                 if (root.history-open) { root.history-open = false; }
                                 else { ime-input.focus(); }   // back to the terminal
                                 accept
@@ -1010,25 +1017,6 @@ export component TerminalView inherits Rectangle {
                                     }
                                 }
                                 accept
-                            // --- readline line-editing keys (#103) ---
-                            // Ctrl+A → start of line.
-                            } else if ((Theme.is-mac ? e.modifiers.meta : e.modifiers.control) && (e.text =="a" || e.text == "A" || e.text == "\u{0001}")) {
-                                self.set-selection-offsets(0, 0);
-                                accept
-                            // Ctrl+E → end of line.
-                            } else if ((Theme.is-mac ? e.modifiers.meta : e.modifiers.control) && (e.text =="e" || e.text == "E" || e.text == "\u{0005}")) {
-                                self.set-selection-offsets(1000000, 1000000);
-                                accept
-                            // Ctrl+K → kill from cursor to end (deletes + clipboard).
-                            } else if ((Theme.is-mac ? e.modifiers.meta : e.modifiers.control) && (e.text =="k" || e.text == "K" || e.text == "\u{000B}")) {
-                                self.set-selection-offsets(self.cursor-position_byte-offset, 1000000);
-                                self.cut();
-                                accept
-                            // Ctrl+U → kill from start to cursor.
-                            } else if ((Theme.is-mac ? e.modifiers.meta : e.modifiers.control) && (e.text =="u" || e.text == "U" || e.text == "\u{0015}")) {
-                                self.set-selection-offsets(0, self.cursor-position_byte-offset);
-                                self.cut();
-                                accept
                             } else {
                                 reject
                             }
@@ -1042,19 +1030,6 @@ export component TerminalView inherits Rectangle {
                         font-size: Theme.fs-md;
                         vertical-alignment: center;
                     }
-                }
-
-                // History toggle.
-                Rectangle {
-                    width: 28px;
-                    border-radius: Theme.radius-sm;
-                    background: hist-ta.has-hover || root.history-open ? Theme.bg-hover : Theme.bg-elevated;
-                    hist-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.quick-open = false; root.history-open = !root.history-open; }
-                    }
-                    Text { text: "\u{E5CE}"; font-family: "Material Icons"; color: Theme.text-secondary;
-                           font-size: Theme.fs-md; horizontal-alignment: center; vertical-alignment: center; }
                 }
 
                 // Send-to-all toggle.
@@ -1296,7 +1271,9 @@ export component TerminalView inherits Rectangle {
 
             // --- History popup (opens upward) -------------------------------
             if root.history-open : Rectangle {
-                x: parent.width - 308px;
+                // Align with the history button: left padding + quick-command
+                // button width + the layout spacing between the two buttons.
+                x: 8px + qc-row.preferred-width + 16px + 6px;
                 width: 300px;
                 height: min(296px, 46px + max(28px, min(228px, h-col.preferred-height + 8px)));
                 y: -self.height - 2px;
@@ -1420,7 +1397,7 @@ export component TerminalView inherits Rectangle {
                                     font-family: Theme.ui-font-family;
                                     font-size: Theme.fs-sm;
                                     single-line: true;
-                                    // Auto-focus so Ctrl+R lands you typing (#140).
+                                    // Auto-focus whenever the history popup opens (#140).
                                     init => { self.focus(); }
                                     edited => { root.search-history(self.text); root.history-selected = 0; }
                                     // ↑/↓ move the selection, Enter runs it, Esc

@@ -162,40 +162,88 @@ export component LabeledInput inherits VerticalLayout {
 }
 
 // --- Sparkline -------------------------------------------------------------
-// Compact stacked horizontal bar chart used in the stats sidebar. Each sample
-// shares one column: download is green at the bottom, upload is orange above it.
+// FinalShell-style overlaid throughput history. Upload and download share one
+// baseline and one scale. Horizontally, two 2px samples follow a 1px boundary,
+// producing the reference chart's exact repeating 5px cadence.
 export component Sparkline inherits Rectangle {
     in property <[float]> upload-values;
     in property <[float]> download-values;
-    in property <brush> upload-color: Theme.warning;
-    in property <brush> download-color: Theme.success;
+    in property <brush> overlap-color: #bdb089;
+    in property <brush> upload-color: #fdceb6;
+    in property <brush> download-color: #bed4be;
+    in property <brush> divider-color: #a3925c;
     property <int> sample-count: max(upload-values.length, download-values.length);
+    property <length> pair-width: 5px;
+    property <length> sample-width: 2px;
+    property <length> history-width: ceil(root.sample-count / 2) * root.pair-width;
 
-    background: Theme.bg-root;
-    border-radius: Theme.radius-sm;
+    background: transparent;
     clip: true;
 
-    // Download segment: anchored to the bottom of the column.
-    for download[i] in download-values : Rectangle {
-        x: i * (parent.width / max(1, root.sample-count));
-        y: parent.height - (parent.height * clamp(download, 0.0, 1.0));
-        width: (parent.width / max(1, root.sample-count)) - 1px;
-        height: parent.height * clamp(download, 0.0, 1.0);
-        background: download-color.with-alpha(0.88);
-        border-radius: 1px;
-    }
-
-    // Upload segment: starts exactly where the download segment ends.
-    for upload[i] in upload-values : Rectangle {
+    for upload[i] in root.upload-values : sample := Rectangle {
+        property <bool> second-in-pair: Math.mod(i, 2) == 1;
         property <float> download: i < root.download-values.length
             ? clamp(root.download-values[i], 0.0, 1.0) : 0.0;
         property <float> upload-height: clamp(upload, 0.0, 1.0);
-        x: i * (parent.width / max(1, root.sample-count));
-        y: parent.height - (parent.height * clamp(self.download + self.upload-height, 0.0, 1.0));
-        width: (parent.width / max(1, root.sample-count)) - 1px;
-        height: parent.height * self.upload-height;
-        background: upload-color.with-alpha(0.9);
-        border-radius: 1px;
+        property <float> overlap: min(self.download, self.upload-height);
+        property <float> next-download: i + 1 < root.download-values.length
+            ? clamp(root.download-values[i + 1], 0.0, 1.0) : 0.0;
+        property <float> next-upload: i + 1 < root.upload-values.length
+            ? clamp(root.upload-values[i + 1], 0.0, 1.0) : 0.0;
+        property <float> next-overlap: min(self.next-download, self.next-upload);
+
+        x: parent.width - root.history-width
+            + floor(i / 2) * root.pair-width
+            + (self.second-in-pair ? 3px : 1px);
+        width: self.second-in-pair ? root.sample-width + 1px : root.sample-width;
+        height: parent.height;
+
+        // The shared section is one mixed colour. Only the part above it uses
+        // the colour of whichever direction exceeds the other.
+        Rectangle {
+            y: parent.height - parent.height * sample.overlap;
+            width: parent.width;
+            height: parent.height * sample.overlap;
+            background: root.overlap-color;
+        }
+
+        if sample.download > sample.overlap : Rectangle {
+            y: parent.height - parent.height * sample.download;
+            width: parent.width;
+            height: parent.height * (sample.download - sample.overlap);
+            background: root.download-color;
+        }
+        if sample.upload-height > sample.overlap : Rectangle {
+            y: parent.height - parent.height * sample.upload-height;
+            width: parent.width;
+            height: parent.height * (sample.upload-height - sample.overlap);
+            background: root.upload-color;
+        }
+
+        // The boundary after every second sample exists only through the shared
+        // region of the samples on its left and right. Above that, the odd
+        // sample's own colour continues into the boundary pixel, leaving no gap.
+        if sample.second-in-pair && i + 1 < root.sample-count : Rectangle {
+            x: root.sample-width;
+            y: parent.height - parent.height * min(sample.overlap, sample.next-overlap);
+            width: 1px;
+            height: parent.height * min(sample.overlap, sample.next-overlap);
+            background: root.divider-color;
+        }
+    }
+
+    // Leading boundary for the oldest visible pair.
+    if root.sample-count > 0 : Rectangle {
+        property <float> first-download: root.download-values.length > 0
+            ? clamp(root.download-values[0], 0.0, 1.0) : 0.0;
+        property <float> first-upload: root.upload-values.length > 0
+            ? clamp(root.upload-values[0], 0.0, 1.0) : 0.0;
+        property <float> first-overlap: min(self.first-download, self.first-upload);
+        x: parent.width - root.history-width;
+        y: parent.height - parent.height * self.first-overlap;
+        width: 1px;
+        height: parent.height * self.first-overlap;
+        background: root.divider-color;
     }
 }
 

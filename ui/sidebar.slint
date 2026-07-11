@@ -78,6 +78,7 @@ component NetGraph inherits VerticalLayout {
     in property <string> down-text;
     in property <[float]> up-history;
     in property <[float]> down-history;
+    in property <[string]> scale-labels;
     in property <bool> show-selector: false;
     in property <[string]> ifaces;
     in property <string> selected;
@@ -90,29 +91,29 @@ component NetGraph inherits VerticalLayout {
 
     HorizontalLayout {
         spacing: 3px;
-        Text {                              // ↑ upload (orange)
+        Text {                              // ↑ upload
             text: "\u{E5D8}";
             font-family: "Material Icons";
-            color: Theme.warning;
+            color: #96320a;
             font-size: Theme.fs-xs;
             vertical-alignment: center;
         }
         Text {
             text: root.up-text;
-            color: Theme.text-secondary;
+            color: #96320a;
             font-size: Theme.fs-xs;
             vertical-alignment: center;
         }
-        Text {                              // ↓ download (green)
+        Text {                              // ↓ download
             text: "\u{E5DB}";
             font-family: "Material Icons";
-            color: Theme.success;
+            color: #145a14;
             font-size: Theme.fs-xs;
             vertical-alignment: center;
         }
         Text {
             text: root.down-text;
-            color: Theme.text-secondary;
+            color: #145a14;
             font-size: Theme.fs-xs;
             vertical-alignment: center;
         }
@@ -184,12 +185,62 @@ component NetGraph inherits VerticalLayout {
         }
     }
 
-    Sparkline {
+    graph-area := Rectangle {
         height: 48px;
-        upload-values: root.up-history;
-        download-values: root.down-history;
-        upload-color: Theme.warning;
-        download-color: Theme.success;
+        property <length> label-width: root.scale-labels.length > 0 ? 35px : 0px;
+
+        for label[i] in root.scale-labels : Text {
+            x: 0px;
+            y: clamp(i * (parent.height - 1px) / 3 - (i == 0 ? 0px : self.height / 2),
+                     0px, parent.height - self.height);
+            width: graph-area.label-width - 4px;
+            height: 12px;
+            text: label;
+            color: #191919;
+            font-size: 9px * Theme.ui-scale;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+
+        plot := Rectangle {
+            x: graph-area.label-width;
+            width: parent.width - self.x;
+            height: parent.height;
+            background: #ffffff;
+            clip: true;
+
+            for label[i] in root.scale-labels : Rectangle {
+                y: i * (parent.height - 2px) / 3;
+                width: parent.width;
+                height: 1px;
+                background: #c1c1c1;
+            }
+
+            Sparkline {
+                width: parent.width;
+                height: parent.height - 1px;
+                upload-values: root.up-history;
+                download-values: root.down-history;
+                overlap-color: #bdb089;
+                upload-color: #fdceb6;
+                download-color: #bed4be;
+                divider-color: #a3925c;
+            }
+
+            Rectangle {
+                y: parent.height - 1px;
+                width: parent.width;
+                height: 1px;
+                background: #b6ced6;
+            }
+
+            Rectangle {
+                x: parent.width - 1px;
+                width: 1px;
+                height: parent.height;
+                background: #b6ced6;
+            }
+        }
     }
 }
 
@@ -325,6 +376,7 @@ component NetBlock inherits VerticalLayout {
     in property <string> net-top-down;
     in property <[float]> net-top-up-history;
     in property <[float]> net-top-down-history;
+    in property <[string]> net-top-scale;
     in property <bool> net-show-selector;
     in property <[string]> net-ifaces;
     in property <string> net-selected;
@@ -332,11 +384,13 @@ component NetBlock inherits VerticalLayout {
     in property <string> net-bot-down;
     in property <[float]> net-bot-up-history;
     in property <[float]> net-bot-down-history;
+    in property <[string]> net-bot-scale;
     callback select-net-iface(string);
     spacing: 6px;
     NetGraph {
         up-text: root.net-top-up; down-text: root.net-top-down;
         up-history: root.net-top-up-history; down-history: root.net-top-down-history;
+        scale-labels: root.net-top-scale;
         show-selector: root.net-show-selector; ifaces: root.net-ifaces; selected: root.net-selected;
         iface-selected(i) => { root.select-net-iface(i); }
     }
@@ -344,6 +398,7 @@ component NetBlock inherits VerticalLayout {
     NetGraph {
         up-text: root.net-bot-up; down-text: root.net-bot-down;
         up-history: root.net-bot-up-history; down-history: root.net-bot-down-history;
+        scale-labels: root.net-bot-scale;
     }
 }
 
@@ -510,10 +565,12 @@ export component Sidebar inherits Rectangle {
     in property <string> net-top-down;
     in property <[float]> net-top-up-history;
     in property <[float]> net-top-down-history;
+    in property <[string]> net-top-scale;
     in property <string> net-bot-up;
     in property <string> net-bot-down;
     in property <[float]> net-bot-up-history;
     in property <[float]> net-bot-down-history;
+    in property <[string]> net-bot-scale;
     in property <[string]> net-ifaces;
     in property <string> net-selected;
     in property <bool> net-show-selector;
@@ -597,9 +654,11 @@ export component Sidebar inherits Rectangle {
             NetBlock {
                 net-top-up: root.net-top-up; net-top-down: root.net-top-down;
                 net-top-up-history: root.net-top-up-history; net-top-down-history: root.net-top-down-history;
+                net-top-scale: root.net-top-scale;
                 net-show-selector: root.net-show-selector; net-ifaces: root.net-ifaces; net-selected: root.net-selected;
                 net-bot-up: root.net-bot-up; net-bot-down: root.net-bot-down;
                 net-bot-up-history: root.net-bot-up-history; net-bot-down-history: root.net-bot-down-history;
+                net-bot-scale: root.net-bot-scale;
                 select-net-iface(i) => { root.select-net-iface(i); }
             }
             ProcessCpuBlock {
@@ -661,9 +720,11 @@ export component Sidebar inherits Rectangle {
                 NetBlock {
                     net-top-up: root.net-top-up; net-top-down: root.net-top-down;
                     net-top-up-history: root.net-top-up-history; net-top-down-history: root.net-top-down-history;
+                    net-top-scale: root.net-top-scale;
                     net-show-selector: root.net-show-selector; net-ifaces: root.net-ifaces; net-selected: root.net-selected;
                     net-bot-up: root.net-bot-up; net-bot-down: root.net-bot-down;
                     net-bot-up-history: root.net-bot-up-history; net-bot-down-history: root.net-bot-down-history;
+                    net-bot-scale: root.net-bot-scale;
                     select-net-iface(i) => { root.select-net-iface(i); }
                 }
                 ProcessCpuBlock {

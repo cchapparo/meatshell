@@ -4009,25 +4009,58 @@ fn push_net_sample(buf: &mut Vec<NetSample>, download: f32, upload: f32) {
     buf.push(NetSample { download, upload });
 }
 
-/// Auto-scale stacked download/upload histories against the peak combined rate.
-/// Both series use the same denominator, preserving their true per-sample ratio.
-fn normalized_net_models(buf: &[NetSample]) -> (ModelRc<f32>, ModelRc<f32>) {
-    let max_total = buf
+/// Auto-scale download/upload histories against the largest individual peak.
+/// Both series share this denominator and start at the same baseline in the UI,
+/// so their absolute heights remain directly comparable.
+fn normalized_net_models(buf: &[NetSample]) -> (ModelRc<f32>, ModelRc<f32>, f32) {
+    let peak = buf
         .iter()
-        .map(|sample| sample.download + sample.upload)
-        .fold(1.0_f32, f32::max);
+        .map(|sample| sample.download.max(sample.upload))
+        .fold(0.0_f32, f32::max);
+    let scale = peak.max(1.0);
     let download: Vec<f32> = buf
         .iter()
-        .map(|sample| (sample.download / max_total).clamp(0.0, 1.0))
+        .map(|sample| (sample.download / scale).clamp(0.0, 1.0))
         .collect();
     let upload: Vec<f32> = buf
         .iter()
-        .map(|sample| (sample.upload / max_total).clamp(0.0, 1.0))
+        .map(|sample| (sample.upload / scale).clamp(0.0, 1.0))
         .collect();
     (
         ModelRc::from(Rc::new(VecModel::from(download))),
         ModelRc::from(Rc::new(VecModel::from(upload))),
+        peak,
     )
+}
+
+fn compact_net_rate(bytes_per_sec: f32) -> String {
+    const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
+    let mut value = bytes_per_sec.max(0.0) as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    let text = if value >= 100.0 {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.1}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    };
+    format!("{text}{}", UNITS[unit])
+}
+
+fn net_scale_model(peak: f32) -> ModelRc<SharedString> {
+    if peak <= 0.0 {
+        return ModelRc::from(Rc::new(VecModel::<SharedString>::default()));
+    }
+    ModelRc::from(Rc::new(VecModel::from(vec![
+        compact_net_rate(peak).into(),
+        compact_net_rate(peak * 2.0 / 3.0).into(),
+        compact_net_rate(peak / 3.0).into(),
+    ])))
 }
 
 /// Build the filesystem-usage model (path, "avail/total", used fraction).
@@ -4596,16 +4629,19 @@ fn refresh_sidebar(
     // --- Bottom network graph: always the local machine --------------------
     win.set_net_bot_up(format_bytes_per_sec(snap.net_tx_per_sec).into());
     win.set_net_bot_down(format_bytes_per_sec(snap.net_rx_per_sec).into());
-    let (local_down_history, local_up_history) =
+    let (local_down_history, local_up_history, local_peak) =
         normalized_net_models(&local_net_hist.lock().unwrap());
     win.set_net_bot_down_history(local_down_history.clone());
     win.set_net_bot_up_history(local_up_history.clone());
+    let local_scale = net_scale_model(local_peak);
+    win.set_net_bot_scale(local_scale.clone());
 
     let set_top_local = |win: &AppWindow| {
         win.set_net_top_up(format_bytes_per_sec(snap.net_tx_per_sec).into());
         win.set_net_top_down(format_bytes_per_sec(snap.net_rx_per_sec).into());
         win.set_net_top_down_history(local_down_history.clone());
         win.set_net_top_up_history(local_up_history.clone());
+        win.set_net_top_scale(local_scale.clone());
         win.set_net_show_selector(false);
         win.set_net_selected("".into());
         win.set_net_ifaces(ModelRc::from(Rc::new(VecModel::<SharedString>::default())));
@@ -4669,9 +4705,10 @@ fn refresh_sidebar(
             let (name, rx, tx) = selected_iface(&st);
             win.set_net_top_up(format_bytes_per_sec(tx).into());
             win.set_net_top_down(format_bytes_per_sec(rx).into());
-            let (down_history, up_history) = normalized_net_models(&st.net_hist);
+            let (down_history, up_history, peak) = normalized_net_models(&st.net_hist);
             win.set_net_top_down_history(down_history);
             win.set_net_top_up_history(up_history);
+            win.set_net_top_scale(net_scale_model(peak));
             win.set_net_show_selector(!st.net.is_empty());
             win.set_net_selected(name.into());
             let ifaces: Vec<SharedString> = st.net.iter().map(|e| e.0.clone().into()).collect();
@@ -9512,7 +9549,7 @@ mod key_tests {
     }
 
     #[test]
-    fn stacked_network_histories_share_one_scale() {
+    fn overlaid_network_histories_share_the_largest_individual_peak() {
         let samples = [
             NetSample {
                 download: 8.0,
@@ -9520,15 +9557,25 @@ mod key_tests {
             },
             NetSample {
                 download: 4.0,
-                upload: 1.0,
+                upload: 10.0,
             },
         ];
-        let (download, upload) = normalized_net_models(&samples);
+        let (download, upload, peak) = normalized_net_models(&samples);
 
+        assert_eq!(peak, 10.0);
         assert_eq!(download.row_data(0), Some(0.8));
         assert_eq!(upload.row_data(0), Some(0.2));
         assert_eq!(download.row_data(1), Some(0.4));
-        assert_eq!(upload.row_data(1), Some(0.1));
+        assert_eq!(upload.row_data(1), Some(1.0));
+    }
+
+    #[test]
+    fn network_scale_labels_use_the_same_peak() {
+        let labels = net_scale_model(3.0 * 1024.0 * 1024.0);
+        assert_eq!(labels.row_data(0).as_deref(), Some("3M"));
+        assert_eq!(labels.row_data(1).as_deref(), Some("2M"));
+        assert_eq!(labels.row_data(2).as_deref(), Some("1M"));
+        assert_eq!(net_scale_model(0.0).row_count(), 0);
     }
 
     #[test]

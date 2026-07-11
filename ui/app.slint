@@ -247,10 +247,12 @@ export component AppWindow inherits Window {
     in property <string> net-top-down;      // ↓ rx rate text
     in property <[float]> net-top-up-history;
     in property <[float]> net-top-down-history;
+    in property <[string]> net-top-scale;
     in property <string> net-bot-up;
     in property <string> net-bot-down;
     in property <[float]> net-bot-up-history;
     in property <[float]> net-bot-down-history;
+    in property <[string]> net-bot-scale;
     in property <[string]> net-ifaces;      // remote NIC names for the selector
     in property <string> net-selected;      // currently selected NIC
     in property <bool> net-show-selector;   // only on a live session tab
@@ -1042,10 +1044,12 @@ export component AppWindow inherits Window {
             net-top-down: root.net-top-down;
             net-top-up-history: root.net-top-up-history;
             net-top-down-history: root.net-top-down-history;
+            net-top-scale: root.net-top-scale;
             net-bot-up: root.net-bot-up;
             net-bot-down: root.net-bot-down;
             net-bot-up-history: root.net-bot-up-history;
             net-bot-down-history: root.net-bot-down-history;
+            net-bot-scale: root.net-bot-scale;
             net-ifaces: root.net-ifaces;
             net-selected: root.net-selected;
             net-show-selector: root.net-show-selector;

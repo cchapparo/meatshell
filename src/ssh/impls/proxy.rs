@@ -9,21 +9,57 @@
 //! * **HTTP / HTTPS CONNECT** (`http://` / `https://`): we issue an HTTP
 //!   `CONNECT host:port` and reuse the same socket as the tunnel.
 //!
-//! The proxy is taken from the per-session setting, falling back to the standard
-//! `ALL_PROXY` / `all_proxy` environment variable.
+//! An enabled global SOCKS5 setting takes precedence for every SSH / SFTP
+//! connection. Otherwise use the per-session proxy, then `ALL_PROXY` / `all_proxy`.
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use crate::config::Secret;
-use super::structs::{ProxyConfig, ProxyKind};
+use std::sync::RwLock;
 
-/// Resolve the proxy for a session: the explicit `session_proxy` string if set,
-/// otherwise the `ALL_PROXY` / `all_proxy` environment variable.  Returns `None`
-/// for a direct connection.
+use super::structs::{ProxyConfig, ProxyKind};
+use crate::config::Secret;
+
+// Shared by shell, SFTP, reconnects and automation, like the global keepalive.
+static GLOBAL_SOCKS5: RwLock<Option<ProxyConfig>> = RwLock::new(None);
+
+pub fn set_global_socks5(proxy: Option<ProxyConfig>) {
+    *GLOBAL_SOCKS5.write().unwrap() = proxy;
+}
+
+/// Validate a host entered separately from its port, including IPv6 literals.
+pub fn socks5_config(host: &str, port: u16) -> Result<ProxyConfig> {
+    let host = host.trim();
+    if host.is_empty() || port == 0 {
+        bail!("SOCKS5 requires a host and a port between 1 and 65535");
+    }
+    let host = match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.to_string(),
+        Err(_) => match url::Host::parse(host).context("invalid SOCKS5 host")? {
+            url::Host::Domain(name) => name,
+            url::Host::Ipv4(ip) => ip.to_string(),
+            url::Host::Ipv6(ip) => ip.to_string(),
+        },
+    };
+    Ok(ProxyConfig {
+        kind: ProxyKind::Socks5,
+        host,
+        port,
+        auth: None,
+    })
+}
+
+/// Resolve global SOCKS5 first, then the session proxy and environment.
 pub fn resolve(session_proxy: &str) -> Option<ProxyConfig> {
+    resolve_with_global(GLOBAL_SOCKS5.read().unwrap().as_ref(), session_proxy)
+}
+
+fn resolve_with_global(global: Option<&ProxyConfig>, session_proxy: &str) -> Option<ProxyConfig> {
+    if let Some(proxy) = global {
+        return Some(proxy.clone());
+    }
     let s = session_proxy.trim();
     if !s.is_empty() {
         return parse(s);
@@ -144,4 +180,88 @@ async fn connect_http(cfg: &ProxyConfig, host: &str, port: u16) -> Result<TcpStr
         return Err(anyhow!("proxy CONNECT rejected: {}", status_line.trim()));
     }
     Ok(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_socks5_overrides_session_proxy() {
+        let global = socks5_config("127.0.0.1", 1080).unwrap();
+        for session in [
+            "",
+            "http://per-session.invalid:3128",
+            "invalid://proxy:9999",
+        ] {
+            let resolved = resolve_with_global(Some(&global), session).unwrap();
+            assert_eq!(resolved.kind, ProxyKind::Socks5);
+            assert_eq!(resolved.host, "127.0.0.1");
+            assert_eq!(resolved.port, 1080);
+        }
+        let resolved = resolve_with_global(None, "http://per-session.invalid:3128").unwrap();
+        assert_eq!(resolved.kind, ProxyKind::Http);
+        assert_eq!(resolved.host, "per-session.invalid");
+    }
+
+    #[test]
+    fn global_socks5_validates_host_and_port() {
+        for (input, expected) in [
+            (" 127.0.0.1 ", "127.0.0.1"),
+            ("proxy.example", "proxy.example"),
+            ("::1", "::1"),
+            ("[::1]", "::1"),
+        ] {
+            assert_eq!(socks5_config(input, 1080).unwrap().host, expected);
+        }
+        for host in [
+            "",
+            "   ",
+            "socks5://127.0.0.1",
+            "127.0.0.1:1080",
+            "bad host",
+            "user@proxy",
+        ] {
+            assert!(socks5_config(host, 1080).is_err(), "{host}");
+        }
+        assert!(socks5_config("127.0.0.1", 0).is_err());
+    }
+
+    #[tokio::test]
+    async fn socks5_sends_target_hostname_to_proxy() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = socks5_config("127.0.0.1", listener.local_addr().unwrap().port()).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut greeting = [0; 3];
+            stream.read_exact(&mut greeting).await.unwrap();
+            assert_eq!(greeting, [5, 1, 0]);
+            stream.write_all(&[5, 0]).await.unwrap();
+            let mut request = [0; 5];
+            stream.read_exact(&mut request).await.unwrap();
+            assert_eq!(&request[..4], &[5, 1, 0, 3]);
+            let mut hostname = vec![0; request[4] as usize];
+            stream.read_exact(&mut hostname).await.unwrap();
+            assert_eq!(hostname, b"server.example.invalid");
+            let mut port = [0; 2];
+            stream.read_exact(&mut port).await.unwrap();
+            assert_eq!(u16::from_be_bytes(port), 2222);
+            stream
+                .write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 22])
+                .await
+                .unwrap();
+            stream.write_all(b"SSH-2.0-fixture\r\n").await.unwrap();
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut stream = connect(&proxy, "server.example.invalid", 2222)
+                .await
+                .unwrap();
+            let mut banner = [0; 17];
+            stream.read_exact(&mut banner).await.unwrap();
+            assert_eq!(&banner, b"SSH-2.0-fixture\r\n");
+            server.await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
 }

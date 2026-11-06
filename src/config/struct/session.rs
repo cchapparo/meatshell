@@ -189,7 +189,8 @@ pub struct Session {
     #[serde(default)]
     pub private_key_inline: Secret,
     /// Optional outbound proxy, e.g. "socks5://127.0.0.1:1080" or
-    /// "http://user:pass@host:8080". Empty = use $ALL_PROXY, else direct.
+    /// "http://user:pass@host:8080". Global SOCKS5 takes precedence when enabled.
+    /// Otherwise empty = use $ALL_PROXY, else direct.
     #[serde(default)]
     pub proxy: String,
     /// Optional SSH jump host (bastion): the id of another saved SSH session to

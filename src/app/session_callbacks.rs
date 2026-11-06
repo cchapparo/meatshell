@@ -1700,6 +1700,7 @@ pub(super) fn listen_for_config_changes(ctx: &WinCtx, sessions_model: &Rc<VecMod
                 w.set_term_font_size(store.borrow().font_size() as f32);
                 // SSH keepalive (#515) is a client-wide setting.
                 super::settings_callbacks::sync_ssh_keepalive(&w, &store.borrow());
+                super::settings_callbacks::sync_global_socks5(&w, &store.borrow());
                 // Docked vs detached editor (#494) is a global preference.
                 w.set_editor_embedded(store.borrow().editor_embedded());
                 if let Some(editor) = editor_weak.upgrade() {

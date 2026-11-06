@@ -317,6 +317,14 @@ pub struct ConfigFile {
     /// Settings-panel font scale, percent (80–160). 0 = 100% default (v0.5).
     #[serde(default)]
     pub panel_font: u32,
+    /// Route all new SSH / SFTP connections through this SOCKS5 endpoint.
+    #[serde(default)]
+    pub global_socks5_enabled: bool,
+    #[serde(default)]
+    pub global_socks5_host: String,
+    /// 0 uses the default SOCKS5 port (1080).
+    #[serde(default)]
+    pub global_socks5_port: u16,
     /// Turn off SSH keepalives (Settings › Connection, #515). Default false =
     /// keepalive on, as since #160.
     #[serde(default)]

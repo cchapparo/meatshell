@@ -182,6 +182,12 @@ pub(super) fn wire_interface_toggles(
     }
 }
 
+pub(super) fn sync_global_socks5(window: &AppWindow, store: &ConfigStore) {
+    window.set_global_socks5_enabled(store.global_socks5_enabled());
+    window.set_global_socks5_host(store.global_socks5_host().into());
+    window.set_global_socks5_port(store.global_socks5_port().to_string().into());
+}
+
 /// Show the saved SSH keepalive setting (#515) in a window's settings page.
 pub(super) fn sync_ssh_keepalive(window: &AppWindow, store: &ConfigStore) {
     window.set_ssh_keepalive_enabled(store.ssh_keepalive_enabled());
@@ -285,6 +291,41 @@ pub(super) fn wire_session_log_settings(ctx: &WinCtx) {
             let mut s = store.borrow_mut();
             s.set_extra_paste_shortcuts_enabled(enabled);
             let _ = s.save();
+        });
+    }
+    sync_global_socks5(window, &store.borrow());
+    {
+        let store = store.clone();
+        let registry = ctx.registry.clone();
+        let weak = window.as_weak();
+        window.on_save_global_socks5(move |enabled, host, port| {
+            let Some(w) = weak.upgrade() else { return };
+            let Some(port) = port.trim().parse::<u16>().ok().filter(|port| *port > 0) else {
+                w.set_global_socks5_status(
+                    t("端口须为 1–65535 的整数", "Port must be an integer from 1 to 65535").into(),
+                );
+                return;
+            };
+            let result = store
+                .borrow_mut()
+                .save_global_socks5(enabled, host.as_str(), port);
+            match result {
+                Ok(()) => {
+                    sync_global_socks5(&w, &store.borrow());
+                    w.set_global_socks5_status(
+                        t(
+                            "已保存，对新建和重连的 SSH / SFTP 连接生效",
+                            "Saved. Applies to new and reconnected SSH / SFTP connections",
+                        ).into(),
+                    );
+                    registry.broadcast_config_changed();
+                }
+                Err(error) => {
+                    w.set_global_socks5_status(
+                        format!("{} {error:#}", t("保存失败", "Save failed")).into(),
+                    );
+                }
+            }
         });
     }
     // SSH keepalive (Settings › Connection, #515). The store pushes the value

@@ -543,6 +543,10 @@ export component InterfacePanel inherits Rectangle {
     in property <bool> session-log-dir-custom;
     in-out property <bool> paste-confirm-enabled: true;
     in-out property <bool> extra-paste-shortcuts-enabled: true;
+    in-out property <bool> global-socks5-enabled: false;
+    in-out property <string> global-socks5-host;
+    in-out property <string> global-socks5-port: "1080";
+    in-out property <string> global-socks5-status;
     // SSH keepalive (Settings › Connection, #515).
     in-out property <bool> ssh-keepalive-enabled: true;
     in-out property <int> ssh-keepalive-interval: 30;
@@ -646,6 +650,7 @@ export component InterfacePanel inherits Rectangle {
     callback open-session-log-dir();
     callback set-paste-confirm-enabled(bool);
     callback set-extra-paste-shortcuts-enabled(bool);
+    callback save-global-socks5(bool, string, string);
     callback set-ssh-keepalive(bool /* enabled */, int /* interval s */, int /* max missed */);
     callback set-zen-mode(bool);
     callback set-welcome-as-sidebar(bool);
@@ -1560,6 +1565,47 @@ export component InterfacePanel inherits Rectangle {
                 spacing: 0;
                 alignment: start;
 
+                SectionHeader { text: root.lang-en ? "GLOBAL SOCKS5 PROXY" : "全局 SOCKS5 代理"; height: 24px; }
+                SettingRow {
+                    label: root.lang-en ? "Use SOCKS5 for all SSH servers" : "所有 SSH 服务器使用 SOCKS5";
+                    desc: root.lang-en
+                        ? "Save once for all new SSH / SFTP connections and reconnects, including jump hosts. Overrides per-session proxies while enabled."
+                        : "保存一次后，所有新建和重连的 SSH / SFTP 连接（含跳板机）统一走此代理。启用时优先于会话单独配置的代理。";
+                    show-divider: false;
+                    Switch {
+                        on: root.global-socks5-enabled;
+                        toggled(v) => { root.global-socks5-enabled = v; root.global-socks5-status = ""; }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 12px;
+                    LabeledInput {
+                        label: root.lang-en ? "SOCKS5 host" : "SOCKS5 地址";
+                        placeholder: "127.0.0.1";
+                        value <=> root.global-socks5-host;
+                    }
+                    LabeledInput {
+                        width: 100px;
+                        label: root.lang-en ? "Port" : "端口";
+                        placeholder: "1080";
+                        value <=> root.global-socks5-port;
+                    }
+                }
+                HorizontalLayout {
+                    padding-top: 10px;
+                    padding-bottom: 8px;
+                    alignment: end;
+                    PrimaryButton {
+                        text: root.lang-en ? "Save proxy" : "保存代理";
+                        clicked => { root.save-global-socks5(root.global-socks5-enabled, root.global-socks5-host, root.global-socks5-port); }
+                    }
+                }
+                if root.global-socks5-status != "" : Text {
+                    text: root.global-socks5-status;
+                    color: Theme.text-muted;
+                    font-size: 11px * Theme.panel-font;
+                    wrap: word-wrap;
+                }
                 SectionHeader { text: root.lang-en ? "SSH KEEPALIVE" : "SSH 保活"; height: 24px; }
                 SettingRow {
                     label: root.lang-en ? "Send keepalives" : "发送保活包";

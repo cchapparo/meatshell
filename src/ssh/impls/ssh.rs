@@ -1192,7 +1192,7 @@ where
     H::Error: std::error::Error + Send + Sync + 'static,
 {
     let addr = format!("{}:{}", session.host, session.port);
-    let proxy = crate::ssh::proxy::resolve(&session.proxy);
+    let proxy = crate::ssh::proxy::resolve_ssh(&session.proxy)?;
     let _ = events.send(SessionEvent::ConnectionProxy(
         proxy.as_ref().map(crate::ssh::proxy::describe).unwrap_or_default(),
     ));

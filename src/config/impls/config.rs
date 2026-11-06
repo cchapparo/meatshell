@@ -1506,8 +1506,14 @@ impl ConfigStore {
         }
     }
 
+    pub fn ssh_proxy_required(&self) -> bool {
+        self.cache.ssh_proxy_required
+    }
+
     /// Apply only after a successful save, so a rejected write keeps the active proxy.
-    pub fn save_global_socks5(&mut self, enabled: bool, host: &str, port: u16) -> Result<()> {
+    pub fn save_global_socks5(
+        &mut self, enabled: bool, host: &str, port: u16, ssh_required: bool,
+    ) -> Result<()> {
         let proxy = if enabled {
             Some(crate::ssh::proxy::socks5_config(host, port)?)
         } else {
@@ -1518,7 +1524,9 @@ impl ConfigStore {
             self.cache.global_socks5_enabled,
             self.cache.global_socks5_host.clone(),
             self.cache.global_socks5_port,
+            self.cache.ssh_proxy_required,
         );
+        self.cache.ssh_proxy_required = ssh_required;
         self.cache.global_socks5_enabled = enabled;
         self.cache.global_socks5_host = host.to_string();
         self.cache.global_socks5_port = port;
@@ -1527,10 +1535,11 @@ impl ConfigStore {
                 self.cache.global_socks5_enabled,
                 self.cache.global_socks5_host,
                 self.cache.global_socks5_port,
+                self.cache.ssh_proxy_required,
             ) = previous;
             return Err(error);
         }
-        crate::ssh::proxy::set_global_socks5(proxy);
+        crate::ssh::proxy::set_global_socks5(proxy, ssh_required);
         Ok(())
     }
 
@@ -1543,7 +1552,7 @@ impl ConfigStore {
         } else {
             None
         };
-        crate::ssh::proxy::set_global_socks5(proxy);
+        crate::ssh::proxy::set_global_socks5(proxy, self.ssh_proxy_required());
         Ok(())
     }
 
@@ -2763,29 +2772,31 @@ mod tests {
         assert_eq!(store.global_socks5_host(), "");
         assert_eq!(store.global_socks5_port(), 1080);
 
-        store.save_global_socks5(true, " 127.0.0.1 ", 7890).unwrap();
+        store.save_global_socks5(true, " 127.0.0.1 ", 7890, true).unwrap();
         let disk: ConfigFile = serde_json::from_str(&fs::read_to_string(&store.path).unwrap()).unwrap();
         assert!(disk.global_socks5_enabled);
         assert_eq!(disk.global_socks5_host, "127.0.0.1");
         assert_eq!(disk.global_socks5_port, 7890);
+        assert!(disk.ssh_proxy_required);
         let active = crate::ssh::proxy::resolve("http://other.invalid:3128").unwrap();
         assert_eq!(active.host, "127.0.0.1");
         assert_eq!(active.port, 7890);
 
-        assert!(store.save_global_socks5(true, "", 1080).is_err());
+        assert!(store.save_global_socks5(true, "", 1080, false).is_err());
         assert!(store.global_socks5_enabled());
         assert_eq!(store.global_socks5_host(), "127.0.0.1");
 
         // Simulate an external write so the normal stale-config check rejects saving.
         let original = fs::read_to_string(&store.path).unwrap();
         fs::write(&store.path, "{}").unwrap();
-        assert!(store.save_global_socks5(true, "other.example", 1080).is_err());
+        assert!(store.save_global_socks5(true, "other.example", 1080, false).is_err());
         assert_eq!(store.global_socks5_host(), "127.0.0.1");
         assert_eq!(store.global_socks5_port(), 7890);
         assert_eq!(crate::ssh::proxy::resolve("").unwrap().port, 7890);
+        assert!(store.ssh_proxy_required());
 
         fs::write(&store.path, original).unwrap();
-        store.save_global_socks5(false, "127.0.0.1", 7890).unwrap();
+        store.save_global_socks5(false, "127.0.0.1", 7890, false).unwrap();
         assert!(!store.global_socks5_enabled());
         let active = crate::ssh::proxy::resolve("http://other.invalid:3128").unwrap();
         assert_eq!(active.host, "other.invalid");

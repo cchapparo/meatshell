@@ -184,6 +184,7 @@ pub(super) fn wire_interface_toggles(
 
 pub(super) fn sync_global_socks5(window: &AppWindow, store: &ConfigStore) {
     window.set_global_socks5_enabled(store.global_socks5_enabled());
+    window.set_ssh_proxy_required(store.ssh_proxy_required());
     window.set_global_socks5_host(store.global_socks5_host().into());
     window.set_global_socks5_port(store.global_socks5_port().to_string().into());
 }
@@ -298,7 +299,7 @@ pub(super) fn wire_session_log_settings(ctx: &WinCtx) {
         let store = store.clone();
         let registry = ctx.registry.clone();
         let weak = window.as_weak();
-        window.on_save_global_socks5(move |enabled, host, port| {
+        window.on_save_global_socks5(move |enabled, host, port, ssh_required| {
             let Some(w) = weak.upgrade() else { return };
             let Some(port) = port.trim().parse::<u16>().ok().filter(|port| *port > 0) else {
                 w.set_global_socks5_status(
@@ -308,7 +309,7 @@ pub(super) fn wire_session_log_settings(ctx: &WinCtx) {
             };
             let result = store
                 .borrow_mut()
-                .save_global_socks5(enabled, host.as_str(), port);
+                .save_global_socks5(enabled, host.as_str(), port, ssh_required);
             match result {
                 Ok(()) => {
                     sync_global_socks5(&w, &store.borrow());

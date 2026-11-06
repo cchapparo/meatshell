@@ -389,33 +389,35 @@ pub(super) fn wire_session_callbacks(
         });
     }
 
-    // Import sessions from a portable JSON file (issue #46).
+    // Import a batch of portable / native / FinalShell JSON connection files.
     {
         let weak = window.as_weak();
         let store = store.clone();
         let sessions_model = sessions_model.clone();
         let registry = registry.clone();
         window.on_import_sessions(move || {
-            if let Some(path) = DialogOwner::of_weak(&weak)
+            if let Some(paths) = DialogOwner::of_weak(&weak)
                 .file()
                 .add_filter("JSON", &["json"])
-                .pick_file()
+                .pick_files()
             {
-                let res = store.borrow_mut().import_from(&path);
+                let res = store.borrow_mut().import_files(&paths);
                 if let Some(w) = weak.upgrade() {
                     let hint = match res {
                         Ok((added, skipped)) => {
                             sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
                             registry.broadcast_config_changed();
                             format!(
-                                "{} {} / {} {}",
+                                "{} {} / {} {} · {} {}",
                                 t("已导入", "imported"),
                                 added,
                                 t("跳过重复", "skipped"),
-                                skipped
+                                skipped,
+                                paths.len(),
+                                t("个文件", "files"),
                             )
                         }
-                        Err(e) => format!("{}: {}", t("导入失败", "import failed"), e),
+                        Err(e) => format!("{}: {e:#}", t("导入失败", "import failed")),
                     };
                     w.set_ssh_import_hint(hint.into());
                 }

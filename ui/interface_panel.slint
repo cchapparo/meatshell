@@ -544,6 +544,7 @@ export component InterfacePanel inherits Rectangle {
     in-out property <bool> paste-confirm-enabled: true;
     in-out property <bool> extra-paste-shortcuts-enabled: true;
     in-out property <bool> global-socks5-enabled: false;
+    in-out property <bool> ssh-proxy-required: false;
     in-out property <string> global-socks5-host;
     in-out property <string> global-socks5-port: "1080";
     in-out property <string> global-socks5-status;
@@ -650,7 +651,7 @@ export component InterfacePanel inherits Rectangle {
     callback open-session-log-dir();
     callback set-paste-confirm-enabled(bool);
     callback set-extra-paste-shortcuts-enabled(bool);
-    callback save-global-socks5(bool, string, string);
+    callback save-global-socks5(bool, string, string, bool);
     callback set-ssh-keepalive(bool /* enabled */, int /* interval s */, int /* max missed */);
     callback set-zen-mode(bool);
     callback set-welcome-as-sidebar(bool);
@@ -1591,13 +1592,24 @@ export component InterfacePanel inherits Rectangle {
                         value <=> root.global-socks5-port;
                     }
                 }
+                SettingRow {
+                    label: root.lang-en ? "Require a proxy for SSH" : "拒绝未使用代理的 SSH 连接";
+                    desc: root.lang-en
+                        ? "Block new SSH / SFTP connections and reconnects unless a global, session or ALL_PROXY proxy is active. Save to apply."
+                        : "没有生效的全局代理、会话代理或 ALL_PROXY 代理时，阻止新建和重连的 SSH / SFTP 连接。保存后生效。";
+                    show-divider: false;
+                    Switch {
+                        on: root.ssh-proxy-required;
+                        toggled(v) => { root.ssh-proxy-required = v; root.global-socks5-status = ""; }
+                    }
+                }
                 HorizontalLayout {
                     padding-top: 10px;
                     padding-bottom: 8px;
                     alignment: end;
                     PrimaryButton {
-                        text: root.lang-en ? "Save proxy" : "保存代理";
-                        clicked => { root.save-global-socks5(root.global-socks5-enabled, root.global-socks5-host, root.global-socks5-port); }
+                        text: root.lang-en ? "Save connection settings" : "保存连接设置";
+                        clicked => { root.save-global-socks5(root.global-socks5-enabled, root.global-socks5-host, root.global-socks5-port, root.ssh-proxy-required); }
                     }
                 }
                 if root.global-socks5-status != "" : Text {

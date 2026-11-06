@@ -23,10 +23,21 @@ use super::structs::{ProxyConfig, ProxyKind};
 use crate::config::Secret;
 
 // Shared by shell, SFTP, reconnects and automation, like the global keepalive.
-static GLOBAL_SOCKS5: RwLock<Option<ProxyConfig>> = RwLock::new(None);
+struct ProxySettings {
+    global: Option<ProxyConfig>,
+    ssh_required: bool,
+}
 
-pub fn set_global_socks5(proxy: Option<ProxyConfig>) {
-    *GLOBAL_SOCKS5.write().unwrap() = proxy;
+static PROXY_SETTINGS: RwLock<ProxySettings> = RwLock::new(ProxySettings {
+    global: None,
+    ssh_required: false,
+});
+
+pub fn set_global_socks5(proxy: Option<ProxyConfig>, ssh_required: bool) {
+    *PROXY_SETTINGS.write().unwrap() = ProxySettings {
+        global: proxy,
+        ssh_required,
+    };
 }
 
 /// Validate a host entered separately from its port, including IPv6 literals.
@@ -53,7 +64,23 @@ pub fn socks5_config(host: &str, port: u16) -> Result<ProxyConfig> {
 
 /// Resolve global SOCKS5 first, then the session proxy and environment.
 pub fn resolve(session_proxy: &str) -> Option<ProxyConfig> {
-    resolve_with_global(GLOBAL_SOCKS5.read().unwrap().as_ref(), session_proxy)
+    resolve_with_global(
+        PROXY_SETTINGS.read().unwrap().global.as_ref(),
+        session_proxy,
+    )
+}
+
+/// Enforce the SSH policy against the same proxy snapshot used for connecting.
+pub fn resolve_ssh(session_proxy: &str) -> Result<Option<ProxyConfig>> {
+    let settings = PROXY_SETTINGS.read().unwrap();
+    let proxy = resolve_with_global(settings.global.as_ref(), session_proxy);
+    if settings.ssh_required && proxy.is_none() {
+        bail!(crate::i18n::t(
+            "已拒绝 SSH 直连：请配置全局代理、会话代理或 ALL_PROXY，或关闭“拒绝未使用代理的 SSH 连接”",
+            "Direct SSH connection refused. Configure a global, session or ALL_PROXY proxy, or disable the proxy requirement",
+        ));
+    }
+    Ok(proxy)
 }
 
 fn resolve_with_global(global: Option<&ProxyConfig>, session_proxy: &str) -> Option<ProxyConfig> {

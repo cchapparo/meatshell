@@ -539,3 +539,35 @@ fn same_endpoint_profiles_preserve_names_auth_credentials_proxy_and_routes() {
     );
     remove_fixture(&store);
 }
+
+#[test]
+fn multiple_files_share_deduplication_and_commit_as_one_batch() {
+    let mut store = temp_store();
+    let a = store.path.with_extension("a.json");
+    let b = store.path.with_extension("b.json");
+    let bad = store.path.with_extension("bad.json");
+    fs::write(&a, native(vec![session("a")])).unwrap();
+    fs::write(&b, native(vec![session("a"), session("b")])).unwrap();
+    assert_eq!(store.import_files(&[a.clone(), b.clone()]).unwrap(), (2, 1));
+    assert_eq!(store.sessions().len(), 2);
+    assert_eq!(store.import_files(&[a.clone(), b.clone()]).unwrap(), (0, 3));
+
+    let before_memory = snapshot(&store);
+    let before_disk = fs::read(&store.path).unwrap();
+    fs::write(&a, native(vec![session("c")])).unwrap();
+    fs::write(&bad, "not valid JSON").unwrap();
+    let error = store.import_files(&[a.clone(), bad.clone()]).unwrap_err();
+    assert!(error.to_string().contains("bad.json"));
+    assert_eq!(snapshot(&store), before_memory);
+    assert_eq!(fs::read(&store.path).unwrap(), before_disk);
+
+    // The batch also observes the existing on-disk revision check.
+    fs::write(&store.path, "{}").unwrap();
+    assert!(store.import_files(&[a.clone()]).is_err());
+    assert_eq!(snapshot(&store), before_memory);
+    assert_eq!(fs::read_to_string(&store.path).unwrap(), "{}");
+    for path in [a, b, bad] {
+        fs::remove_file(path).unwrap();
+    }
+    remove_fixture(&store);
+}

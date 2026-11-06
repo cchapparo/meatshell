@@ -325,6 +325,9 @@ pub struct ConfigFile {
     /// 0 uses the default SOCKS5 port (1080).
     #[serde(default)]
     pub global_socks5_port: u16,
+    /// Reject new SSH / SFTP transports when no effective proxy is configured.
+    #[serde(default)]
+    pub ssh_proxy_required: bool,
     /// Turn off SSH keepalives (Settings › Connection, #515). Default false =
     /// keepalive on, as since #160.
     #[serde(default)]

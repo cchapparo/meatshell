@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -89,7 +89,43 @@ impl ConfigStore {
         self.import_json_preview(&read_import(path)?, dry_run)
     }
 
+    /// Validate and stage every selected file, then commit the batch once.
+    pub fn import_files(&mut self, paths: &[PathBuf]) -> Result<(usize, usize)> {
+        let mut candidate = ConfigStore {
+            path: self.path.clone(),
+            backup_dir: self.backup_dir.clone(),
+            cache: self.cache.clone(),
+            disk_snapshot: std::cell::RefCell::new(self.disk_snapshot.borrow().clone()),
+            key: self.key,
+        };
+        let mut added = 0;
+        let mut skipped = 0;
+        for path in paths {
+            let (next, summary) = (|| candidate.prepare_json_import(&read_import(path)?))()
+                .with_context(|| format!("failed to import {}", path.display()))?;
+            candidate = next;
+            added += summary.added;
+            skipped += summary.skipped;
+        }
+        if added > 0 {
+            candidate.save()?;
+            self.cache = candidate.cache;
+            *self.disk_snapshot.borrow_mut() = candidate.disk_snapshot.into_inner();
+        }
+        Ok((added, skipped))
+    }
+
     pub fn import_json_preview(&mut self, raw: &str, dry_run: bool) -> Result<ImportSummary> {
+        let (candidate, summary) = self.prepare_json_import(raw)?;
+        if !dry_run && summary.added > 0 {
+            candidate.save()?;
+            self.cache = candidate.cache;
+            *self.disk_snapshot.borrow_mut() = candidate.disk_snapshot.into_inner();
+        }
+        Ok(summary)
+    }
+
+    fn prepare_json_import(&self, raw: &str) -> Result<(Self, ImportSummary)> {
         if raw.len() > MAX_IMPORT_BYTES {
             bail!("import file exceeds the 16 MiB limit");
         }
@@ -238,14 +274,7 @@ impl ConfigStore {
                 anyhow::anyhow!("import entry {} has an invalid SSH jump chain (missing/non-SSH hop, cycle or too many hops)", index + 1)
             })?;
         }
-        if !dry_run && summary.added > 0 {
-            // save() checks the original disk snapshot under the profile lock.
-            // Any validation, I/O or stale-write failure leaves self unchanged.
-            candidate.save()?;
-            self.cache = candidate.cache;
-            *self.disk_snapshot.borrow_mut() = candidate.disk_snapshot.into_inner();
-        }
-        Ok(summary)
+        Ok((candidate, summary))
     }
 
     fn decode_import_secret(&self, secret: &mut Secret, index: usize, field: &str) -> Result<()> {

@@ -186,6 +186,7 @@ pub(super) fn event_requires_immediate_ui(event: &SessionEvent) -> bool {
     matches!(
         event,
         SessionEvent::Connected
+            | SessionEvent::ConnectionProxy(_)
             | SessionEvent::Closed(_)
             | SessionEvent::HostKeyPrompt { .. }
             | SessionEvent::CredentialPrompt { .. }

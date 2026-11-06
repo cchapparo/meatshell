@@ -652,6 +652,7 @@ export component TerminalView inherits Rectangle {
                 padding-left: 10px; padding-right: 10px;
                 Text {
                     text: root.status-line;
+                    overflow: elide;
                     color: Theme.text-secondary;
                     font-size: Theme.fs-xs;
                     vertical-alignment: center;

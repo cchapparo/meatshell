@@ -13,6 +13,9 @@ use super::{
 pub enum SessionEvent {
     /// Free-form status text for the tab header / status line.
     Status(String),
+    /// Proxy selected for the actual SSH transport. Empty means direct TCP.
+    /// Contains only the scheme and endpoint, never proxy credentials.
+    ConnectionProxy(String),
     /// A chunk of stdout/stderr output from the remote shell.
     Output(String),
     /// Connection is up.

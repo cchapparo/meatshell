@@ -37,6 +37,8 @@ pub(crate) struct TabStatus {
     pub(crate) host: String,
     pub(crate) user: String,
     pub(crate) session_id: String,
+    /// Snapshot of the shell transport, independent of later settings changes.
+    pub(crate) connection_proxy: String,
     pub(crate) state: u8,
     /// True for built-in local shell tabs (system:*). Those should show the
     /// local machine's resource panel, not the (empty) remote stats fields.

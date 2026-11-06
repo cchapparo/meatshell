@@ -71,8 +71,28 @@ pub(super) fn apply_session_event_to_window(
         }
     };
 
+    // Use the transport's snapshot, so changing settings cannot relabel an
+    // already-connected tab. Every status phase keeps the same proxy detail.
+    let connection_status = |status: &str| {
+        let snapshots = statuses.lock().unwrap();
+        match snapshots.get(tab_id) {
+            Some(snapshot) if !snapshot.connection_proxy.is_empty() => format!(
+                "{status}（{} {}）",
+                crate::i18n::t("代理", "proxy"),
+                snapshot.connection_proxy,
+            ),
+            _ => status.to_string(),
+        }
+    };
+
     match event {
+        SessionEvent::ConnectionProxy(proxy) => {
+            if let Some(snapshot) = statuses.lock().unwrap().get_mut(tab_id) {
+                snapshot.connection_proxy = proxy;
+            }
+        }
         SessionEvent::Status(status) => {
+            let status = connection_status(&status);
             update_terminal(&|t| t.status = status.clone().into());
         }
         SessionEvent::Output(chunk) => {
@@ -83,7 +103,8 @@ pub(super) fn apply_session_event_to_window(
         }
         SessionEvent::Connected => {
             update_tab(&|t| t.connected = true);
-            update_terminal(&|t| t.status = crate::i18n::t("已连接", "Connected").into());
+            let status = connection_status(crate::i18n::t("已连接", "Connected"));
+            update_terminal(&|t| t.status = status.clone().into());
             if let Some(st) = statuses.lock().unwrap().get_mut(tab_id) {
                 st.state = 1;
             }
@@ -126,9 +147,10 @@ pub(super) fn apply_session_event_to_window(
                 local_net_hist,
             );
             update_tab(&|t| t.connected = false);
-            update_terminal(&|t| {
-                t.status = format!("{} — {reason}", crate::i18n::t("已断开", "Disconnected")).into()
-            });
+            let status = connection_status(&format!(
+                "{} — {reason}", crate::i18n::t("已断开", "Disconnected"),
+            ));
+            update_terminal(&|t| t.status = status.clone().into());
             if let Some(st) = statuses.lock().unwrap().get_mut(tab_id) {
                 st.state = 2;
             }
@@ -544,4 +566,110 @@ thread_local! {
     /// host:port → decision, remembered for this run so a duplicate prompt
     /// (second connection to the same host) is answered without a new dialog.
     pub(super) static HOSTKEY_DECIDED: RefCell<HashMap<String, bool>> = RefCell::new(HashMap::new());
+}
+
+#[cfg(test)]
+mod connection_status_tests {
+    use super::*;
+    use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+
+    struct Backend;
+    impl slint::platform::Platform for Backend {
+        fn create_window_adapter(
+            &self,
+        ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+            Ok(MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer))
+        }
+    }
+
+    #[test]
+    fn transport_proxy_survives_status_changes_and_is_scoped_to_its_tab() {
+        std::thread::spawn(|| {
+            slint::platform::set_platform(Box::new(Backend)).unwrap();
+            let window = AppWindow::new().unwrap();
+            let editor = EditorWindow::new().unwrap();
+            let terminals = Rc::new(VecModel::from(vec![
+                TerminalState {
+                    id: "proxied".into(),
+                    ..Default::default()
+                },
+                TerminalState {
+                    id: "direct".into(),
+                    ..Default::default()
+                },
+            ]));
+            window.set_terminals(terminals.clone().into());
+            window.set_tabs(
+                Rc::new(VecModel::from(vec![
+                    TabInfo {
+                        id: "proxied".into(),
+                        ..Default::default()
+                    },
+                    TabInfo {
+                        id: "direct".into(),
+                        ..Default::default()
+                    },
+                ]))
+                .into(),
+            );
+            let statuses = Arc::new(Mutex::new(HashMap::from([
+                ("proxied".to_string(), TabStatus::default()),
+                ("direct".to_string(), TabStatus::default()),
+            ])));
+            let bufs = Default::default();
+            let gates = Default::default();
+            let local = Default::default();
+            let history = Default::default();
+            let apply = |tab, event| {
+                apply_session_event_to_window(
+                    &window, &editor, 1, tab, event, &bufs, &gates, &statuses, &local, &history,
+                )
+            };
+            apply(
+                "proxied",
+                SessionEvent::ConnectionProxy("socks5://127.0.0.1:7890".into()),
+            );
+            apply(
+                "proxied",
+                SessionEvent::Status("SSH handshake to server:22".into()),
+            );
+            assert!(terminals
+                .row_data(0)
+                .unwrap()
+                .status
+                .contains("socks5://127.0.0.1:7890"));
+            apply("proxied", SessionEvent::Connected);
+            apply(
+                "proxied",
+                SessionEvent::Status("Connected user@server:22".into()),
+            );
+            let connected = terminals.row_data(0).unwrap().status;
+            assert!(connected.contains("user@server:22"));
+            assert!(connected.contains("socks5://127.0.0.1:7890"));
+
+            apply("direct", SessionEvent::ConnectionProxy(String::new()));
+            apply(
+                "direct",
+                SessionEvent::Status("Connected user@other:22".into()),
+            );
+            assert_eq!(
+                terminals.row_data(1).unwrap().status,
+                "Connected user@other:22"
+            );
+            assert_eq!(terminals.row_data(0).unwrap().status, connected);
+
+            // The replacement transport can use direct TCP after a reconnect.
+            apply("proxied", SessionEvent::ConnectionProxy(String::new()));
+            apply(
+                "proxied",
+                SessionEvent::Status("Connected user@server:22".into()),
+            );
+            assert_eq!(
+                terminals.row_data(0).unwrap().status,
+                "Connected user@server:22"
+            );
+        })
+        .join()
+        .unwrap();
+    }
 }

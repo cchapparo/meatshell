@@ -27,6 +27,10 @@ pub(super) fn should_start_sftp(session: &Session) -> bool {
 /// already-registered tab. Used by the initial connect and by in-place
 /// reconnect (#79); the tab/terminal/parser must already exist.
 pub(super) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &ConnectCtx) {
+    // A reconnect gets a fresh transport snapshot, including a change to direct TCP.
+    if let Some(snapshot) = ctx.tab_statuses.lock().unwrap().get_mut(tab_id) {
+        snapshot.connection_proxy.clear();
+    }
     let has_sftp = should_start_sftp(&session);
     let (initial_cols, initial_rows) = *ctx.last_term_size.lock().unwrap();
     // Resolve every ancestor on the UI thread before starting any worker.
@@ -394,7 +398,15 @@ pub(super) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &Connect
                         Err(_) => break,
                     }
                 }
-                let ui_batch: Vec<SessionEvent> = drained.drain(..).collect();
+                // SFTP has its own transport and progress area. Its handshake
+                // must not overwrite the shell's connection details.
+                let ui_batch: Vec<SessionEvent> = drained.drain(..)
+                    .filter_map(|event| match event {
+                        SessionEvent::ConnectionProxy(_) => None,
+                        SessionEvent::Status(status) => Some(SessionEvent::SftpStatus(status)),
+                        other => Some(other),
+                    })
+                    .collect();
                 if ui_batch.is_empty() {
                     continue;
                 }

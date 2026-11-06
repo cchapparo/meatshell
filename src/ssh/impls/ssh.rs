@@ -1192,20 +1192,20 @@ where
     H::Error: std::error::Error + Send + Sync + 'static,
 {
     let addr = format!("{}:{}", session.host, session.port);
-    let stream = match crate::ssh::proxy::resolve(&session.proxy) {
-        Some(p) => {
-            let _ = events.send(SessionEvent::Status(format!(
-                "{} {} → {}",
-                t("经代理连接", "via proxy"),
-                crate::ssh::proxy::describe(&p),
-                addr
-            )));
-            network_stage(
-                &format!("proxy connect to {addr}"),
-                crate::ssh::proxy::connect(&p, &session.host, session.port),
-            )
-            .await?
-        }
+    let proxy = crate::ssh::proxy::resolve(&session.proxy);
+    let _ = events.send(SessionEvent::ConnectionProxy(
+        proxy.as_ref().map(crate::ssh::proxy::describe).unwrap_or_default(),
+    ));
+    let _ = events.send(SessionEvent::Status(format!(
+        "{} {addr}…",
+        t("正在连接", "Connecting to"),
+    )));
+    let stream = match proxy {
+        Some(p) => network_stage(
+            &format!("proxy connect to {addr}"),
+            crate::ssh::proxy::connect(&p, &session.host, session.port),
+        )
+        .await?,
         None => network_stage(
             &format!("TCP connect to {addr}"),
             tokio::net::TcpStream::connect((session.host.as_str(), session.port)),
@@ -1796,10 +1796,11 @@ async fn run_session(
 
     let _ = events.send(SessionEvent::Connected);
     let _ = events.send(SessionEvent::Status(format!(
-        "{} {}@{}",
+        "{} {}@{}:{}",
         t("已连接", "Connected"),
         session.user,
-        session.host
+        session.host,
+        session.port
     )));
 
     // Whether we have already injected the PROMPT_COMMAND setup.

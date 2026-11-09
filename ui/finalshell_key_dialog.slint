@@ -1,0 +1,119 @@
+import { Theme } from "theme.slint";
+import { ModalLayer } from "modal.slint";
+import { GhostButton, PrimaryButton, LabeledInput } from "widgets.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export component FinalShellKeyDialog inherits ModalLayer {
+    in property <bool> lang-en;
+    in property <string> progress;
+    in property <string> key-id;
+    in property <string> connections;
+    in property <string> key-file;
+    in-out property <string> passphrase;
+    in property <string> error;
+    in property <bool> last-key;
+    callback select-file();
+    callback confirm();
+    callback cancel();
+    cancel-requested => { root.cancel(); }
+
+    Rectangle {
+        width: min(580px, parent.width - 32px);
+        height: card.preferred-height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.popup-bg;
+        border-radius: Theme.radius-lg;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        TouchArea {}
+        card := VerticalLayout {
+            padding: 20px;
+            spacing: 12px;
+            Text {
+                text: root.lang-en ? "Associate original private key" : "关联原始私钥";
+                color: Theme.text-primary;
+                font-size: Theme.fs-xl;
+                font-weight: 600;
+            }
+            Text {
+                text: root.progress;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-md;
+            }
+            Text {
+                text: (root.lang-en ? "FinalShell key ID  " : "FinalShell 私钥编号  ") + root.key-id;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-sm;
+                overflow: elide;
+            }
+            Text {
+                text: root.lang-en ? "These connections will use the selected private key" : "以下连接将使用你选择的私钥";
+                color: Theme.text-primary;
+                font-size: Theme.fs-md;
+            }
+            ScrollView {
+                height: 100px;
+                content-width: self.visible-width;
+                content-height: max(self.visible-height, connections-text.preferred-height + 12px);
+                connections-text := Text {
+                    x: 6px;
+                    y: 6px;
+                    width: parent.visible-width - 12px;
+                    text: root.connections;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-md;
+                    wrap: word-wrap;
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: root.key-file == "" ? (root.lang-en ? "No private key selected" : "尚未选择私钥文件") : root.key-file;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+                GhostButton {
+                    text: root.lang-en ? "Select private key…" : "选择私钥…";
+                    clicked => { root.select-file(); }
+                }
+            }
+            LabeledInput {
+                label: root.lang-en ? "Private key passphrase (leave empty if none)" : "私钥口令（未加密则留空）";
+                value <=> root.passphrase;
+                password: true;
+                canceled => { root.cancel(); }
+            }
+            Text {
+                text: root.lang-en
+                    ? "Choose once for all connections using this ID. Keys are encrypted in MeatShell after import. Nothing is saved until all keys are associated."
+                    : "同一编号只需选择一次。导入后私钥将加密保存在 MeatShell 中。全部关联完成后才会保存连接。";
+                color: Theme.text-muted;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+            if root.error != "" : Text {
+                text: root.error;
+                color: Theme.danger;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                GhostButton {
+                    text: root.lang-en ? "Cancel import" : "取消导入";
+                    clicked => { root.cancel(); }
+                }
+                PrimaryButton {
+                    text: root.last-key ? (root.lang-en ? "Associate & import" : "关联并导入") : (root.lang-en ? "Associate & next" : "关联并继续");
+                    disabled: root.key-file == "";
+                    clicked => { root.confirm(); }
+                }
+            }
+        }
+    }
+}

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use super::super::finalshell::{self, FinalShellKeyRequest, OriginalPrivateKey};
 use super::{ConfigStore, Secret, Session, SessionKind};
 
 /// Bound file reads as well as JSON parsing, including files that grow while read.
@@ -27,6 +28,61 @@ pub struct ImportSummary {
 struct ImportedSessions {
     // Deliberately required: an arbitrary settings object is not a session export.
     sessions: Vec<Session>,
+}
+
+/// Snapshot the selected files while the user associates original keys. The
+/// final import uses these exact bytes, even if an export is edited meanwhile.
+pub(crate) struct SessionImportBatch {
+    files: Vec<(PathBuf, String)>,
+    key_requests: Vec<FinalShellKeyRequest>,
+}
+
+impl SessionImportBatch {
+    pub fn read(paths: &[PathBuf]) -> Result<Self> {
+        let mut files = Vec::new();
+        let mut key_requests: Vec<FinalShellKeyRequest> = Vec::new();
+        let mut total_bytes = 0;
+        for path in paths {
+            let raw = read_import(path)
+                .with_context(|| format!("failed to import {}", path.display()))?;
+            total_bytes += raw.len();
+            if total_bytes > 64 * 1024 * 1024 {
+                bail!("selected import files exceed the 64 MiB batch limit");
+            }
+            let value: serde_json::Value = serde_json::from_str(&raw)
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "invalid import JSON at line {}, column {}",
+                        error.line(),
+                        error.column()
+                    )
+                })
+                .with_context(|| format!("failed to import {}", path.display()))?;
+            if value.get("meatshell_export").is_none() && value.get("sessions").is_none() {
+                for request in finalshell::key_requests(&raw)
+                    .with_context(|| format!("failed to import {}", path.display()))?
+                {
+                    if let Some(existing) = key_requests.iter_mut().find(|r| r.id == request.id) {
+                        existing.connections.extend(request.connections);
+                    } else {
+                        key_requests.push(request);
+                    }
+                }
+            }
+            files.push((path.clone(), raw));
+        }
+        Ok(Self {
+            files,
+            key_requests,
+        })
+    }
+
+    pub fn key_requests(&self) -> &[FinalShellKeyRequest] {
+        &self.key_requests
+    }
+    pub fn file_count(&self) -> usize {
+        self.files.len()
+    }
 }
 
 type SessionIdentity = String;
@@ -91,6 +147,14 @@ impl ConfigStore {
 
     /// Validate and stage every selected file, then commit the batch once.
     pub fn import_files(&mut self, paths: &[PathBuf]) -> Result<(usize, usize)> {
+        self.import_batch(&SessionImportBatch::read(paths)?, &HashMap::new())
+    }
+
+    pub fn import_batch(
+        &mut self,
+        batch: &SessionImportBatch,
+        keys: &HashMap<String, OriginalPrivateKey>,
+    ) -> Result<(usize, usize)> {
         let mut candidate = ConfigStore {
             path: self.path.clone(),
             backup_dir: self.backup_dir.clone(),
@@ -100,8 +164,9 @@ impl ConfigStore {
         };
         let mut added = 0;
         let mut skipped = 0;
-        for path in paths {
-            let (next, summary) = (|| candidate.prepare_json_import(&read_import(path)?))()
+        for (path, raw) in &batch.files {
+            let (next, summary) = candidate
+                .prepare_json_import_with_keys(raw, keys)
                 .with_context(|| format!("failed to import {}", path.display()))?;
             candidate = next;
             added += summary.added;
@@ -126,6 +191,14 @@ impl ConfigStore {
     }
 
     fn prepare_json_import(&self, raw: &str) -> Result<(Self, ImportSummary)> {
+        self.prepare_json_import_with_keys(raw, &HashMap::new())
+    }
+
+    fn prepare_json_import_with_keys(
+        &self,
+        raw: &str,
+        keys: &HashMap<String, OriginalPrivateKey>,
+    ) -> Result<(Self, ImportSummary)> {
         if raw.len() > MAX_IMPORT_BYTES {
             bail!("import file exceeds the 16 MiB limit");
         }
@@ -149,9 +222,8 @@ impl ConfigStore {
         } else {
             // FinalShell's decoder already returns plaintext. Never reinterpret
             // a coincidental enc:* prefix in that decoded password as our format.
-            super::super::finalshell::parse_export(raw).map_err(|_| {
-                anyhow::anyhow!("invalid or unsupported FinalShell import; check connection fields and password encoding")
-            })?
+            // The FinalShell parser sanitizes its errors before returning them.
+            finalshell::parse_export_with_keys(raw, keys).context("invalid FinalShell import")?
         };
 
         let mut source_ids = HashSet::new();

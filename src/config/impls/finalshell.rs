@@ -9,6 +9,9 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use des::cipher::{generic_array::GenericArray, BlockDecrypt, KeyInit};
 use des::Des;
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::io::Read;
+use std::path::Path;
 
 use super::structs::{AuthMethod, PortForward, Secret, Session, SessionKind};
 
@@ -38,6 +41,8 @@ struct FinalShellConnection {
     password: String,
     #[serde(default = "default_password_auth")]
     authentication_type: i64,
+    #[serde(default)]
+    secret_key_id: String,
     #[serde(default)]
     terminal_encoding: String,
     #[serde(default)]
@@ -73,19 +78,117 @@ fn default_password_auth() -> i64 {
     1
 }
 
+/// An explicit association chosen by the user, never a path supplied by JSON.
+#[derive(Debug, Clone)]
+pub(crate) struct OriginalPrivateKey {
+    private_key: Secret,
+    passphrase: Secret,
+}
+
+impl OriginalPrivateKey {
+    pub fn read(path: &Path, passphrase: Secret) -> Result<Self> {
+        const LIMIT: u64 = 1024 * 1024;
+        let file = std::fs::File::open(path).context(crate::i18n::t(
+            "无法读取私钥文件",
+            "cannot read private key file",
+        ))?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() > LIMIT {
+            bail!(crate::i18n::t(
+                "私钥必须是小于 1 MiB 的普通文件",
+                "private key must be a regular file smaller than 1 MiB"
+            ));
+        }
+        let mut raw = zeroize::Zeroizing::new(String::new());
+        file.take(LIMIT + 1).read_to_string(&mut raw).map_err(|_| {
+            anyhow::anyhow!(crate::i18n::t(
+                "私钥文件必须是 UTF-8 文本",
+                "private key file must be UTF-8 text"
+            ))
+        })?;
+        let private_key = Secret::new(std::mem::take(&mut *raw));
+        if private_key.as_str().len() > LIMIT as usize {
+            bail!("private key file exceeds the 1 MiB limit");
+        }
+        let session = Session {
+            private_key_inline: private_key.clone(),
+            ..Session::new_empty()
+        };
+        // Use the real SSH loader so accepted formats and passphrases match
+        // connection establishment (OpenSSH/PEM and PuTTY PPK).
+        crate::ssh::load_session_private_key(&session, passphrase.as_str()).map_err(|_| {
+            anyhow::anyhow!(crate::i18n::t(
+                "无法解析私钥，请选择原始私钥文件并检查私钥口令（不能选择 .pub 公钥）",
+                "cannot parse private key; select the original private key and check its passphrase (not a .pub public key)"))
+        })?;
+        Ok(Self {
+            private_key,
+            passphrase,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FinalShellKeyRequest {
+    pub id: String,
+    pub connections: Vec<String>,
+}
+
+pub(super) fn key_requests(raw: &str) -> Result<Vec<FinalShellKeyRequest>> {
+    let mut requests: Vec<FinalShellKeyRequest> = Vec::new();
+    for connection in parse_connections(raw)? {
+        connection.validate()?;
+        if connection.authentication_type != 2 {
+            continue;
+        }
+        let name = if connection.name.trim().is_empty() {
+            connection.host.trim().to_string()
+        } else {
+            connection.name.trim().to_string()
+        };
+        if let Some(request) = requests
+            .iter_mut()
+            .find(|r| r.id == connection.secret_key_id)
+        {
+            request.connections.push(name);
+        } else {
+            requests.push(FinalShellKeyRequest {
+                id: connection.secret_key_id,
+                connections: vec![name],
+            });
+        }
+    }
+    Ok(requests)
+}
+
 /// Parse either one FinalShell connection object or an array of connection
 /// objects. FinalShell currently identifies SSH connection exports with type 100.
+#[cfg(test)]
 pub(super) fn parse_export(raw: &str) -> Result<Vec<Session>> {
-    let value: serde_json::Value = serde_json::from_str(raw).context("not valid JSON")?;
+    parse_export_with_keys(raw, &HashMap::new())
+}
+
+pub(super) fn parse_export_with_keys(
+    raw: &str,
+    keys: &HashMap<String, OriginalPrivateKey>,
+) -> Result<Vec<Session>> {
+    parse_connections(raw)?
+        .into_iter()
+        .map(|c| c.into_session(keys))
+        .collect()
+}
+
+fn parse_connections(raw: &str) -> Result<Vec<FinalShellConnection>> {
+    // Do not include serde errors, which can quote credential-bearing input.
+    let invalid = || anyhow::anyhow!("invalid FinalShell connection fields in import file");
+    let value: serde_json::Value = serde_json::from_str(raw).map_err(|_| invalid())?;
     let connections: Vec<FinalShellConnection> = match value {
         object @ serde_json::Value::Object(_) => {
-            vec![serde_json::from_value(object).context("not a FinalShell connection export")?]
+            vec![serde_json::from_value(object).map_err(|_| invalid())?]
         }
         serde_json::Value::Array(values) => values
             .into_iter()
-            .map(|value| {
-                serde_json::from_value(value).context("invalid FinalShell connection entry")
-            })
+            .map(|value| serde_json::from_value(value).map_err(|_| invalid()))
             .collect::<Result<_>>()?,
         _ => bail!("not a FinalShell connection export"),
     };
@@ -94,41 +197,60 @@ pub(super) fn parse_export(raw: &str) -> Result<Vec<Session>> {
         bail!("FinalShell export contains no connections");
     }
 
-    connections
-        .into_iter()
-        .map(FinalShellConnection::into_session)
-        .collect()
+    Ok(connections)
 }
 
 impl FinalShellConnection {
-    fn into_session(self) -> Result<Session> {
+    fn validate(&self) -> Result<()> {
         if self.conection_type != 100 {
             bail!(
                 "unsupported FinalShell connection type {} (only SSH type 100 is supported)",
                 self.conection_type
             );
         }
-        if self.authentication_type != 1 {
+        if !matches!(self.authentication_type, 1 | 2) {
             bail!(
-                "unsupported FinalShell authentication type {} (only password type 1 is supported)",
+                "unsupported FinalShell authentication type {} (expected password type 1 or private key type 2)",
                 self.authentication_type
             );
         }
-        let host = self.host.trim().to_string();
-        if host.is_empty() {
+        if self.host.trim().is_empty() {
             bail!("FinalShell connection has an empty host");
         }
         if self.port == 0 {
-            bail!("FinalShell connection {host} has an invalid port");
+            bail!("FinalShell connection has an invalid port");
         }
+        if self.authentication_type == 2
+            && (self.secret_key_id.trim().is_empty() || self.secret_key_id.len() > 1024)
+        {
+            bail!("FinalShell private-key connection is missing a valid secret_key_id");
+        }
+        Ok(())
+    }
 
-        let password = if self.password.is_empty() {
-            Secret::default()
-        } else {
-            Secret::new(
-                decode_password(&self.password)
-                    .with_context(|| format!("failed to decrypt FinalShell password for {host}"))?,
+    fn into_session(self, keys: &HashMap<String, OriginalPrivateKey>) -> Result<Session> {
+        self.validate()?;
+        let host = self.host.trim().to_string();
+        let (auth, password, private_key_inline) = if self.authentication_type == 2 {
+            let key = keys.get(&self.secret_key_id).context(crate::i18n::t(
+                "FinalShell 私钥连接需要关联原始私钥，请在桌面端导入连接时选择私钥文件",
+                "FinalShell key authentication requires the original private key; select it when importing connections in the desktop app"))?;
+            // The connection's password may be a stale account password. Only
+            // use the passphrase explicitly supplied for this private key.
+            (
+                AuthMethod::Key,
+                key.passphrase.clone(),
+                key.private_key.clone(),
             )
+        } else {
+            let password = if self.password.is_empty() {
+                Secret::default()
+            } else {
+                Secret::new(decode_password(&self.password).map_err(|_| {
+                    anyhow::anyhow!("cannot decrypt FinalShell password; check password encoding")
+                })?)
+            };
+            (AuthMethod::Password, password, Secret::default())
         };
         let name = match self.name.trim() {
             "" => host.clone(),
@@ -144,8 +266,9 @@ impl FinalShellConnection {
             host,
             port: self.port,
             user: self.user_name.trim().to_string(),
-            auth: AuthMethod::Password,
+            auth,
             password,
+            private_key_inline,
             kind: SessionKind::Ssh,
             encoding,
             note: self.description,

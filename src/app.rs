@@ -22,6 +22,7 @@ mod hit_test;
 mod editor_syntax;
 #[cfg(windows)]
 mod jump_list;
+mod json_import;
 mod key_input;
 pub mod launch;
 mod misc_callbacks;

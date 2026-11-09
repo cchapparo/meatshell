@@ -209,8 +209,20 @@ jump-host references are remapped to the new IDs, including forward references a
 references to skipped duplicates. `--dry-run` validates and reports counts without
 changing saved sessions; normal profile initialization may create the directory/key.
 
-The limit is 16 MiB. MeatShell portable exports (`meatshell_export: 1`, including
+The limit is 16 MiB per file and 64 MiB per selected batch. MeatShell portable exports (`meatshell_export: 1`, including
 `enc:exp:v1:` credentials), FinalShell exports, and native JSON profiles are supported.
+
+The desktop **Import connections** picker accepts multiple JSON files. For
+FinalShell private-key connections, MeatShell groups the selected connections by
+`secret_key_id` and asks for the original private key once per ID, listing the
+connections that will use it. OpenSSH, PEM and PuTTY PPK formats accepted by the
+SSH loader are supported. Enter an encrypted key's passphrase in the same dialog.
+All associations are validated before the batch is saved; cancelling saves no
+connections. Keys and passphrases are encrypted in the MeatShell profile, so the
+original files can be moved after import. A stale account password in a FinalShell
+connection is never used as a key passphrase. Import FinalShell files containing
+these key references in the desktop app before using the sessions via CLI/MCP.
+
 Native profiles import sessions only. Machine-local `enc:v1:` credentials require the
 matching profile key; undecryptable secrets and invalid jump chains reject the entire
 import. A key-file path is preserved but its file is not copied: make that key available

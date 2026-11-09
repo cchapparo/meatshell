@@ -42,6 +42,7 @@ use super::structs::*;
 
 #[path = "import.rs"]
 mod import;
+pub(crate) use import::SessionImportBatch;
 
 // ── Data directory resolution (portable-first, #141) ──────────────────────────
 //

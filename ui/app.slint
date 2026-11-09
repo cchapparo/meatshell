@@ -21,6 +21,7 @@ import { Welcome, SessionInfo } from "welcome.slint";
 import { SessionDialog, SessionDraft, PortFwd, TriggerDraft, JumpHop } from "session_dialog.slint";
 import { ConfirmDialog } from "confirm_dialog.slint";
 import { ModalLayer, ModalKind } from "modal.slint";
+import { FinalShellKeyDialog } from "finalshell_key_dialog.slint";
 import { LabeledInput, PrimaryButton, GhostButton, DockExpandButton, IconButton, ToolStrip } from "widgets.slint";
 import { TerminalView, TermSpan, TermMatch, QuickCmd, QuickDockPanel } from "terminal_view.slint";
 import { SftpEntry, SftpTreeNode, TunnelInfo } from "sftp_panel.slint";
@@ -1181,6 +1182,7 @@ export component AppWindow inherits Window {
         root.chmod-open ? ModalKind.permissions :
         root.tab-rename-open ? ModalKind.tab-rename :
         root.group-dialog-open ? ModalKind.group :
+        root.finalshell-key-import-open ? ModalKind.finalshell-key-import :
         root.batch-import-open ? ModalKind.batch-import :
         root.dialog-open ? ModalKind.session :
         root.quick-cmd-manage-open ? ModalKind.quick-commands :
@@ -1204,6 +1206,17 @@ export component AppWindow inherits Window {
     in-out property <string> ssh-import-hint;  // result text shown after import
     callback export-sessions();               // export all sessions to a file (#46)
     callback import-sessions();               // import sessions from a file (#46)
+    in-out property <bool> finalshell-key-import-open: false;
+    in-out property <string> finalshell-key-progress;
+    in-out property <string> finalshell-key-id;
+    in-out property <string> finalshell-key-connections;
+    in-out property <string> finalshell-key-file;
+    in-out property <string> finalshell-key-passphrase;
+    in-out property <string> finalshell-key-error;
+    in-out property <bool> finalshell-key-last;
+    callback finalshell-key-select();
+    callback finalshell-key-confirm();
+    callback finalshell-key-cancel();
     in-out property <bool> batch-import-open: false;  // text batch-import dialog (#150)
     in-out property <string> batch-import-text;       // the textarea content
     callback batch-import-confirm(string /* pasted text */);
@@ -4874,6 +4887,25 @@ export component AppWindow inherits Window {
         secondary => { session-editor.submit-current(); }
         confirm => { root.hostkey-accept(); }
         cancel => { root.hostkey-reject(); }
+    }
+
+    FinalShellKeyDialog {
+        width: parent.width;
+        height: parent.height;
+        is-open: root.finalshell-key-import-open;
+        covered: root.active-modal != ModalKind.finalshell-key-import;
+        is-mac: root.is-mac;
+        lang-en: root.lang-en;
+        progress: root.finalshell-key-progress;
+        key-id: root.finalshell-key-id;
+        connections: root.finalshell-key-connections;
+        key-file: root.finalshell-key-file;
+        passphrase <=> root.finalshell-key-passphrase;
+        error: root.finalshell-key-error;
+        last-key: root.finalshell-key-last;
+        select-file => { root.finalshell-key-select(); }
+        confirm => { root.finalshell-key-confirm(); }
+        cancel => { root.finalshell-key-cancel(); }
     }
 
     // Batch-import connections from pasted text (#150).

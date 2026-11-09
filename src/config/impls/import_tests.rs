@@ -571,3 +571,187 @@ fn multiple_files_share_deduplication_and_commit_as_one_batch() {
     }
     remove_fixture(&store);
 }
+
+fn original_key_fixture(store: &ConfigStore, encrypted: bool) -> (PathBuf, Secret, String) {
+    let key =
+        ssh_key::PrivateKey::random(&mut rand::rngs::OsRng, ssh_key::Algorithm::Ed25519).unwrap();
+    let passphrase = if encrypted {
+        "synthetic-key-passphrase"
+    } else {
+        ""
+    };
+    let key = if encrypted {
+        key.encrypt(&mut rand::rngs::OsRng, passphrase).unwrap()
+    } else {
+        key
+    };
+    let raw = key.to_openssh(ssh_key::LineEnding::LF).unwrap().to_string();
+    let path = store.path.with_extension("fixture-key");
+    fs::write(&path, &raw).unwrap();
+    (path, Secret::new(passphrase), raw)
+}
+
+fn finalshell_key_connection(name: &str, id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "conection_type": 100, "authentication_type": 2,
+        "name": name, "host": "synthetic.example.invalid", "user_name": "fixture",
+        "secret_key_id": id,
+        // A stale password is not a key passphrase and need not be decodable.
+        "password": "SYNTHETIC_STALE_ACCOUNT_PASSWORD", "proxy_id": "synthetic-proxy-id"
+    })
+}
+
+#[test]
+fn finalshell_original_key_is_shared_across_files_encrypted_and_self_contained() {
+    for encrypted in [false, true] {
+        let mut store = temp_store();
+        let (key_path, passphrase, key_text) = original_key_fixture(&store, encrypted);
+        let a = store.path.with_extension("a.json");
+        let b = store.path.with_extension("b.json");
+        fs::write(&a, finalshell_key_connection("one", "key-a").to_string()).unwrap();
+        fs::write(
+            &b,
+            serde_json::json!([
+                finalshell_key_connection("two", "key-a"),
+                finalshell_key_connection("three", "key-b")
+            ])
+            .to_string(),
+        )
+        .unwrap();
+        let batch = SessionImportBatch::read(&[a.clone(), b.clone()]).unwrap();
+        assert_eq!(batch.key_requests().len(), 2);
+        assert_eq!(batch.key_requests()[0].connections, ["one", "two"]);
+        assert_eq!(batch.key_requests()[1].connections, ["three"]);
+        let binding = OriginalPrivateKey::read(&key_path, passphrase.clone()).unwrap();
+        assert!(!format!("{binding:?}").contains(&key_text));
+        assert!(!format!("{binding:?}").contains("synthetic-key-passphrase"));
+        let keys = HashMap::from([("key-a".into(), binding.clone()), ("key-b".into(), binding)]);
+        // A source changed after the user reviewed the batch cannot be imported.
+        fs::write(&b, "not JSON anymore").unwrap();
+        assert_eq!(store.import_batch(&batch, &keys).unwrap(), (3, 0));
+        fs::remove_file(&key_path).unwrap();
+        for session in store.sessions() {
+            assert_eq!(session.auth, super::super::super::structs::AuthMethod::Key);
+            assert_eq!(session.private_key_inline.as_str(), key_text);
+            assert!(session.private_key_path.is_empty());
+            assert_eq!(session.password.as_str(), passphrase.as_str());
+            crate::ssh::load_session_private_key(session, session.password.as_str()).unwrap();
+        }
+        let raw = fs::read_to_string(&store.path).unwrap();
+        assert!(!raw.contains("BEGIN OPENSSH PRIVATE KEY"));
+        assert!(!raw.contains("synthetic-key-passphrase"));
+        assert!(!raw.contains("SYNTHETIC_STALE_ACCOUNT_PASSWORD"));
+        let mut loaded: ConfigFile = serde_json::from_str(&raw).unwrap();
+        ConfigStore::decrypt_local_secrets(&store.key, &mut loaded);
+        for session in &loaded.sessions {
+            crate::ssh::load_session_private_key(session, session.password.as_str()).unwrap();
+        }
+        assert_eq!(store.import_batch(&batch, &keys).unwrap(), (0, 3));
+        let (export, _) = store.export_json().unwrap();
+        let mut destination = temp_store();
+        destination.key = [19; 32];
+        assert_eq!(destination.import_json(&export).unwrap(), (3, 0));
+        for session in destination.sessions() {
+            crate::ssh::load_session_private_key(session, session.password.as_str()).unwrap();
+        }
+        fs::remove_file(a).unwrap();
+        fs::remove_file(b).unwrap();
+        remove_fixture(&store);
+        remove_fixture(&destination);
+    }
+}
+
+#[test]
+fn finalshell_missing_key_invalid_file_and_stale_disk_leave_entire_batch_unchanged() {
+    let mut store = temp_store();
+    store.cache.sessions.push(session("existing"));
+    store.save().unwrap();
+    let before = snapshot(&store);
+    let disk = fs::read(&store.path).unwrap();
+    let a = store.path.with_extension("a.json");
+    let b = store.path.with_extension("b.json");
+    fs::write(&a, native(vec![session("valid")])).unwrap();
+    fs::write(&b, finalshell_key_connection("key", "key-a").to_string()).unwrap();
+    let batch = SessionImportBatch::read(&[a.clone(), b.clone()]).unwrap();
+    let error = store.import_batch(&batch, &HashMap::new()).unwrap_err();
+    assert!(!format!("{error:#}").contains("SYNTHETIC_STALE"));
+    assert_eq!(snapshot(&store), before);
+    assert_eq!(fs::read(&store.path).unwrap(), disk);
+    // Abandoning the association prompt has no side effects.
+    drop(batch);
+    assert_eq!(snapshot(&store), before);
+    assert_eq!(fs::read(&store.path).unwrap(), disk);
+    let (key_path, passphrase, _) = original_key_fixture(&store, false);
+    let keys = HashMap::from([(
+        "key-a".into(),
+        OriginalPrivateKey::read(&key_path, passphrase).unwrap(),
+    )]);
+    let batch = SessionImportBatch::read(&[a.clone(), b.clone()]).unwrap();
+    fs::write(&store.path, "{}").unwrap();
+    assert!(store.import_batch(&batch, &keys).is_err());
+    assert_eq!(snapshot(&store), before);
+    assert_eq!(fs::read_to_string(&store.path).unwrap(), "{}");
+    fs::write(&a, "broken JSON").unwrap();
+    assert!(SessionImportBatch::read(&[b.clone(), a.clone()]).is_err());
+    for path in [a, b, key_path] {
+        fs::remove_file(path).unwrap();
+    }
+    remove_fixture(&store);
+}
+
+#[test]
+fn original_private_key_validation_rejects_public_keys_wrong_passphrases_and_bad_files() {
+    let store = temp_store();
+    let (path, passphrase, _) = original_key_fixture(&store, true);
+    assert!(OriginalPrivateKey::read(&path, Secret::new("WRONG_SYNTHETIC_PASSPHRASE")).is_err());
+    assert!(OriginalPrivateKey::read(&path, Secret::default()).is_err());
+    OriginalPrivateKey::read(&path, passphrase).unwrap();
+    let key =
+        ssh_key::PrivateKey::random(&mut rand::rngs::OsRng, ssh_key::Algorithm::Ed25519).unwrap();
+    fs::write(&path, key.public_key().to_openssh().unwrap()).unwrap();
+    assert!(OriginalPrivateKey::read(&path, Secret::default()).is_err());
+    fs::write(&path, "SYNTHETIC_INVALID_PRIVATE_KEY").unwrap();
+    let error = OriginalPrivateKey::read(&path, Secret::new("SYNTHETIC_PASSPHRASE")).unwrap_err();
+    assert!(!format!("{error:#}").contains("SYNTHETIC_"));
+    fs::write(&path, vec![b'x'; 1024 * 1024 + 1]).unwrap();
+    assert!(OriginalPrivateKey::read(&path, Secret::default()).is_err());
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    assert!(OriginalPrivateKey::read(&path, Secret::default()).is_err());
+    fs::remove_dir(path).unwrap();
+}
+
+#[test]
+fn finalshell_original_key_accepts_existing_encrypted_and_unencrypted_ppk_formats() {
+    let mut store = temp_store();
+    for (raw, passphrase) in [
+        (include_str!("../../../tests/fixtures/ppk-v2-rsa.ppk"), ""),
+        (
+            include_str!("../../../tests/fixtures/ppk-v2-rsa-encrypted.ppk"),
+            "v2-passphrase",
+        ),
+        (
+            include_str!("../../../tests/fixtures/ppk-v3-ed25519.ppk"),
+            "",
+        ),
+        (
+            include_str!("../../../tests/fixtures/ppk-v3-ecdsa-encrypted.ppk"),
+            "test-passphrase",
+        ),
+    ] {
+        let path = store.path.with_extension("key.ppk");
+        fs::write(&path, raw).unwrap();
+        let binding = OriginalPrivateKey::read(&path, Secret::new(passphrase)).unwrap();
+        let keys = HashMap::from([("fixture-ppk".into(), binding)]);
+        let (candidate, _) = store
+            .prepare_json_import_with_keys(
+                &finalshell_key_connection("ppk", "fixture-ppk").to_string(),
+                &keys,
+            )
+            .unwrap();
+        let imported = candidate.sessions().last().unwrap();
+        crate::ssh::load_session_private_key(imported, imported.password.as_str()).unwrap();
+        store = candidate;
+        fs::remove_file(path).unwrap();
+    }
+}

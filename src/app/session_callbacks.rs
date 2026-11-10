@@ -1408,7 +1408,10 @@ pub(super) fn wire_session_callbacks(
             // Create vt100 parser for this tab (default 24×80; resized on first
             // terminal-resize callback). 5000-line scrollback is stored for
             // future scroll-navigation support.
-            let is_dark_now = weak.upgrade().map(|w| w.get_dark_mode()).unwrap_or(true);
+            let is_dark_now = weak
+                .upgrade()
+                .map(|w| w.get_terminal_dark_mode())
+                .unwrap_or(true);
             let (output_highlight, custom_highlight_rules) = {
                 let settings = store.borrow();
                 (
@@ -1658,10 +1661,10 @@ pub(super) fn listen_for_config_changes(ctx: &WinCtx, sessions_model: &Rc<VecMod
                 sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
                 // Custom agents (#427): launch menu and Settings list.
                 w.invoke_refresh_agent_launchers();
-                // Re-apply the theme to the chrome AND every open terminal buffer.
-                apply_dark_mode(&w, &bufs, theme_pref_is_dark(&store.borrow()));
                 // Colour theme preset + immersive switch (Wallpaper & theme).
                 super::color_theme::apply_color_theme(&w, &store.borrow());
+                // Resolve terminal appearance before rebuilding existing output.
+                apply_dark_mode(&w, &bufs, theme_pref_is_dark(&store.borrow()));
                 // Language translations are process-global; refresh our flag only.
                 w.set_lang_en(crate::i18n::is_en());
                 // Command-bar visibility is a global preference.

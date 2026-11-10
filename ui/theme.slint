@@ -36,6 +36,10 @@ export struct ThemePalette {
 export global Theme {
     // Set by Rust on startup (system detection) and on user toggle.
     in-out property <bool> dark: true;
+    // Terminal appearance can stay dark while the surrounding interface is light.
+    in-out property <string> terminal-theme: "follow";
+    out property <bool> terminal-dark: terminal-theme == "dark"
+        || (terminal-theme != "light" && dark);
 
     // --- Colour theme presets (Settings › Wallpaper & theme) --------------
     in-out property <ThemePalette> palette-dark: {
@@ -145,9 +149,9 @@ export global Theme {
     // Terminal uses its own background so it stays readable regardless of
     // what the shell / remote app outputs via ANSI colour codes. With a
     // wallpaper it frosts (kept neutral, not tinted) so text stays legible.
-    property <color> base-term-bg: root.p.term-bg;
+    property <color> base-term-bg: root.terminal-dark ? root.palette-dark.term-bg : root.palette-light.term-bg;
     out property <brush> term-bg: root.wallpaper-active ? base-term-bg.with-alpha(max(0.0, root.panel-alpha - 0.14)) : base-term-bg;
-    out property <brush> term-fg: dark ? #d4d4d4 : #2d2d2f;
+    out property <brush> term-fg: terminal-dark ? #d4d4d4 : #2d2d2f;
 
     // True on macOS (set by Rust). App shortcuts use Cmd (⌘) here instead of
     // Ctrl, so the physical Ctrl key stays free for the shell (^C/^X…) (#158).

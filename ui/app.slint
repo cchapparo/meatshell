@@ -682,6 +682,9 @@ export component AppWindow inherits Window {
     // Two-way binding to Theme.dark — Rust reads/writes this property and
     // Slint propagates it to every widget that references Theme colours.
     in-out property <bool> dark-mode <=> Theme.dark;
+    in-out property <string> terminal-theme <=> Theme.terminal-theme;
+    out property <bool> terminal-dark-mode: Theme.terminal-dark;
+    callback set-terminal-theme(string);
     // Keep Slint's std-widgets (LineEdit / Button / ComboBox in the dialogs) in
     // step with our theme — otherwise in light mode they keep the platform/dark
     // palette and their text/borders blend into the light dialog background.
@@ -695,7 +698,7 @@ export component AppWindow inherits Window {
     in-out property <float> terminal-line-spacing: 1.0;
     in-out property <bool> term-font-bold <=> Theme.term-font-bold;
     in-out property <string> term-cursor-style: "block";
-    in-out property <string> term-cursor-color-hex: root.dark-mode ? "#D4D4D4" : "#2D2D2F";
+    in-out property <string> term-cursor-color-hex: root.terminal-dark-mode ? "#D4D4D4" : "#2D2D2F";
     in-out property <color> term-cursor-color: Theme.term-fg;
     in-out property <bool> output-highlight-enabled: true;
     in-out property <bool> json-format-output: true;
@@ -5339,6 +5342,8 @@ export component AppWindow inherits Window {
                     set-wallpaper(v) => { root.set-wallpaper(v); }
                     pick-wallpaper-file() => { root.pick-wallpaper-file(); }
                     color-themes: root.color-themes;
+                    terminal-theme: root.terminal-theme;
+                    set-terminal-theme(mode) => { root.set-terminal-theme(mode); }
                     color-theme: root.color-theme;
                     color-theme-custom <=> root.color-theme-custom;
                     immersive-colors: root.immersive-colors;

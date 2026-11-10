@@ -88,6 +88,7 @@ open /Applications/meatshell.app
 ### Done
 
 - [x] FinalShell-style UI with dark / light / follow-system themes
+  - Choose **Settings → Wallpaper & theme → Terminal appearance → Dark** to combine light sidebars and toolbars with a dark terminal. Light and Follow interface are also available; changes are saved and immediately recolour open terminals.
 - [x] Local + remote resource monitoring (CPU / memory / swap / network / disk)
 - [x] Remote process monitor (CPU-sorted table with PID copy and permission-aware termination)
 - [x] Full VT/ANSI terminal emulation (btop / htop / vim render correctly)

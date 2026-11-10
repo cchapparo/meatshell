@@ -592,6 +592,8 @@ export component InterfacePanel inherits Rectangle {
     in property <string> custom-wallpaper-name;   // basename for the file row
     // Colour theme presets + immersive colours (Wallpaper & theme page).
     in property <[ColorThemeItem]> color-themes;
+    in property <string> terminal-theme: "follow";
+    callback set-terminal-theme(string);
     in property <string> color-theme: "default";
     in-out property <string> color-theme-custom: "#4A90E2";
     in property <bool> immersive-colors: true;
@@ -1197,6 +1199,20 @@ export component InterfacePanel inherits Rectangle {
                 alignment: start;
 
                 SectionHeader { text: root.lang-en ? "COLOR THEME" : "配色主题"; height: 24px; }
+                SettingRow {
+                    label: root.lang-en ? "Terminal appearance" : "终端外观";
+                    desc: root.lang-en
+                        ? "Set terminal light/dark independently. Sidebars and toolbars keep the interface theme."
+                        : "独立设置终端深浅，运行状态、侧边栏和工具栏仍使用界面主题。";
+                    ComboBox {
+                        width: 160px;
+                        model: root.lang-en ? ["Follow interface", "Dark", "Light"] : ["跟随界面", "深色", "浅色"];
+                        current-index: root.terminal-theme == "dark" ? 1 : root.terminal-theme == "light" ? 2 : 0;
+                        selected(_) => {
+                            root.set-terminal-theme(self.current-index == 1 ? "dark" : self.current-index == 2 ? "light" : "follow");
+                        }
+                    }
+                }
                 SettingRow {
                     label: root.lang-en ? "Color theme" : "配色主题";
                     desc: root.lang-en

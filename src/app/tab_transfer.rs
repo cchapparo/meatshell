@@ -452,6 +452,9 @@ pub(super) fn move_tab_between_windows(
         dst.terminals_model.push(row);
     }
     if let Some(w) = dst.weak.upgrade() {
+        if let Some(buffer) = dst.bufs.lock().unwrap().get(tab_id).cloned() {
+            buffer.lock().unwrap().is_dark = w.get_terminal_dark_mode();
+        }
         refresh_panes(
             &w,
             &dst.layout.borrow(),

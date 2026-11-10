@@ -107,6 +107,9 @@ pub struct ConfigFile {
     /// Theme preference: "system" (default) | "dark" | "light".
     #[serde(default)]
     pub theme_pref: String,
+    /// Terminal appearance: empty/"follow" (default) | "dark" | "light".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub terminal_theme: String,
     /// Platform renderer preference. Windows uses software/auto/gpu; macOS uses
     /// software/femtovg/skia. Missing or foreign-platform values use the platform default.
     #[serde(default)]

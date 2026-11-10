@@ -795,6 +795,22 @@ impl ConfigStore {
         self.cache.theme_pref = pref;
     }
 
+    /// Terminal light/dark preference, independent of the interface theme.
+    pub fn terminal_theme(&self) -> &str {
+        match self.cache.terminal_theme.as_str() {
+            "dark" => "dark",
+            "light" => "light",
+            _ => "follow",
+        }
+    }
+
+    pub fn set_terminal_theme(&mut self, mode: &str) {
+        self.cache.terminal_theme = match mode {
+            "dark" | "light" => mode.to_string(),
+            _ => String::new(),
+        };
+    }
+
     /// Renderer preference for the current platform.
     #[cfg(target_os = "macos")]
     pub fn renderer_mode(&self) -> &str {
@@ -2129,6 +2145,30 @@ mod tests {
             cache: ConfigFile::default(),
             key: [7u8; 32],
         }
+    }
+
+    #[test]
+    fn terminal_theme_persists_independently_and_legacy_configs_follow_interface() {
+        let mut store = temp_store();
+        assert_eq!(store.terminal_theme(), "follow");
+        store.set_theme_pref("light".into());
+        store.set_terminal_theme("dark");
+        store.save().unwrap();
+        store.cache = serde_json::from_slice(&std::fs::read(&store.path).unwrap()).unwrap();
+        assert_eq!(store.theme_pref(), "light");
+        assert_eq!(store.terminal_theme(), "dark");
+        store.set_terminal_theme("light");
+        assert_eq!(store.terminal_theme(), "light");
+        store.set_terminal_theme("follow");
+        assert_eq!(store.terminal_theme(), "follow");
+        assert!(store.cache.terminal_theme.is_empty());
+        store.set_terminal_theme("invalid");
+        assert_eq!(store.terminal_theme(), "follow");
+        store.cache = serde_json::from_str(r#"{"terminal_theme":"unknown"}"#).unwrap();
+        assert_eq!(store.terminal_theme(), "follow");
+        store.cache = serde_json::from_str("{}").unwrap();
+        assert_eq!(store.terminal_theme(), "follow");
+        let _ = std::fs::remove_file(&store.path);
     }
 
     #[test]

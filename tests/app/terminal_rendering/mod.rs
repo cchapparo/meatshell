@@ -102,6 +102,7 @@ fn scrollback_navigation_keys_only_handle_a_scrolled_normal_screen() {
     assert_eq!(buffer.view_offset, 1);
 }
 
+mod appearance;
 mod charset;
 mod colors;
 mod protocol;

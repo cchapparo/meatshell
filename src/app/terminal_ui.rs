@@ -390,13 +390,16 @@ pub(super) fn theme_pref_is_dark(store: &ConfigStore) -> bool {
     }
 }
 
-/// Flip the whole app between light and dark. Setting `Theme.dark` alone only
-/// recolours the Slint chrome — each terminal bakes its ANSI/default colours
-/// from a per-buffer `is_dark` flag at render time, so we must also update every
-/// buffer and re-render it. Both the theme toggle and wallpaper switching route
-/// through here (the proc-window mirror stays with the toggle).
+/// Update the interface and resolve each terminal's independent preference.
 pub(super) fn apply_dark_mode(window: &AppWindow, bufs: &TermBuffers, dark: bool) {
     window.set_dark_mode(dark);
+    refresh_terminal_colors(window, bufs);
+}
+
+/// ANSI/default colours are baked into displayed spans, so changing the
+/// terminal appearance must also recolour existing output in every open tab.
+pub(super) fn refresh_terminal_colors(window: &AppWindow, bufs: &TermBuffers) {
+    let dark = window.get_terminal_dark_mode();
     {
         let handles: Vec<_> = bufs.lock().unwrap().values().cloned().collect();
         for h in handles {

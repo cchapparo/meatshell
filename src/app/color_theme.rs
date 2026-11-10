@@ -412,6 +412,7 @@ fn custom_color(store: &ConfigStore) -> Rgb {
 
 /// Push the saved colour theme and immersive switch into a main window.
 pub(super) fn apply_color_theme(window: &AppWindow, store: &ConfigStore) {
+    window.set_terminal_theme(store.terminal_theme().into());
     let id = normalized_id(store.color_theme());
     let custom = custom_color(store);
     let (dark, light) = palettes(id, custom);
@@ -459,6 +460,30 @@ pub(super) fn wire(ctx: &WinCtx) {
         ..
     } = ctx;
     let detached = (proc_win.as_weak(), sys_win.as_weak(), editor_win.as_weak());
+
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let registry = registry.clone();
+        let bufs = bufs.clone();
+        window.on_set_terminal_theme(move |mode: SharedString| {
+            {
+                let mut s = store.borrow_mut();
+                let previous = s.terminal_theme().to_string();
+                s.set_terminal_theme(mode.as_str());
+                if let Err(error) = s.save() {
+                    s.set_terminal_theme(&previous);
+                    tracing::error!("Failed to save terminal appearance: {error}");
+                    return;
+                }
+            }
+            if let Some(w) = weak.upgrade() {
+                w.set_terminal_theme(store.borrow().terminal_theme().into());
+                refresh_terminal_colors(&w, &bufs);
+            }
+            registry.broadcast_config_changed();
+        });
+    }
 
     {
         let weak = window.as_weak();

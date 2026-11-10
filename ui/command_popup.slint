@@ -1,0 +1,179 @@
+import { Button, LineEdit } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { IconButton } from "widgets.slint";
+
+export struct CommandPopupRow {
+    label: string,
+    command: string,
+    quick-index: int,
+}
+
+// Alt opens this over the terminal, including when the command bar is hidden.
+export component CommandPopup inherits Rectangle {
+    in property <bool> lang-en;
+    in property <[CommandPopupRow]> rows;
+    in-out property <string> query;
+    in-out property <bool> quick: false;
+    in-out property <int> selected-index: root.rows.length == 0 ? -1 : root.quick ? 0 : root.rows.length - 1;
+    callback search();
+    callback activate(int, bool); // false = recall, true = run on this terminal
+    callback copy(int);
+    callback remove(int);
+    callback clear-history();
+    callback manage();
+    callback close();
+    property <bool> clear-armed: false;
+    property <bool> focus-pending: true;
+    public function focus-search() { root.focus-pending = true; }
+    changed rows => {
+        root.selected-index = root.rows.length == 0 ? -1 : root.quick ? 0 : root.rows.length - 1;
+        root.focus-pending = true;
+    }
+    changed quick => { root.clear-armed = false; root.search(); }
+    background: Theme.popup-bg;
+    border-width: 1px;
+    border-color: Theme.border-strong;
+    border-radius: Theme.radius-md;
+    drop-shadow-blur: 20px;
+    drop-shadow-color: #00000050;
+    forward-focus: search-input;
+    TouchArea {} // keep clicks inside the card out of the dismissal backdrop
+    Timer {
+        interval: 0ms;
+        running: root.focus-pending;
+        triggered => {
+            root.focus-pending = false;
+            search-input.focus();
+            list.reveal(root.selected-index);
+        }
+    }
+    FocusScope {
+        width: 100%; height: 100%;
+        forward-focus: search-input;
+        capture-key-pressed(e) => {
+            if e.text == Key.Escape {
+                root.close(); accept
+            } else if e.text == Key.UpArrow || e.text == Key.DownArrow {
+                if root.rows.length > 0 {
+                    root.selected-index = e.text == Key.UpArrow
+                        ? (root.selected-index <= 0 ? root.rows.length - 1 : root.selected-index - 1)
+                        : (root.selected-index >= root.rows.length - 1 ? 0 : root.selected-index + 1);
+                    list.reveal(root.selected-index);
+                }
+                accept
+            } else if e.text == Key.Return && !e.modifiers.alt && !e.modifiers.meta {
+                if root.selected-index >= 0 { root.activate(root.selected-index, e.modifiers.control); }
+                accept
+            } else { reject }
+        }
+        VerticalLayout {
+            padding: 10px; spacing: 8px;
+            HorizontalLayout {
+                height: 30px; spacing: 6px;
+                Button {
+                    text: root.lang-en ? "History" : "历史命令";
+                    primary: !root.quick;
+                    clicked => { root.quick = false; }
+                }
+                Button {
+                    text: root.lang-en ? "Quick commands" : "快捷命令";
+                    primary: root.quick;
+                    clicked => { root.quick = true; }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Text {
+                    text: root.rows.length;
+                    color: Theme.text-muted; font-size: Theme.fs-sm;
+                    vertical-alignment: center;
+                }
+                IconButton { glyph: "×"; clicked => { root.close(); } }
+            }
+            list := Flickable {
+                vertical-stretch: 1;
+                content-width: self.width;
+                content-height: max(self.height, items.preferred-height);
+                public function reveal(row: int) {
+                    if row < 0 { self.content-y = 0px; return; }
+                    let top = row * 30px;
+                    let bottom = top + 30px;
+                    if top < -self.content-y { self.content-y = -top; }
+                    else if bottom > self.height - self.content-y { self.content-y = self.height - bottom; }
+                    self.content-y = clamp(self.content-y, min(0px, self.height - self.content-height), 0px);
+                }
+                items := VerticalLayout {
+                    spacing: 0; alignment: start;
+                    if root.rows.length == 0 : Text {
+                        height: 70px;
+                        text: root.query != ""
+                            ? (root.lang-en ? "No matching commands" : "没有匹配的命令")
+                            : root.quick ? (root.lang-en ? "No quick commands yet. Add them in Manage." : "还没有快捷命令，点击管理添加。")
+                            : (root.lang-en ? "No command history yet" : "暂无命令历史");
+                        color: Theme.text-muted; font-size: Theme.fs-md;
+                        horizontal-alignment: center; vertical-alignment: center;
+                    }
+                    for row[i] in root.rows : Rectangle {
+                        height: 30px;
+                        border-radius: Theme.radius-sm;
+                        background: i == root.selected-index ? Theme.bg-active
+                            : item-touch.has-hover ? Theme.bg-hover : transparent;
+                        item-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.selected-index = i; root.activate(i, false); }
+                        }
+                        HorizontalLayout {
+                            padding-left: 8px; spacing: 2px;
+                            Text {
+                                text: row.label;
+                                color: Theme.text-primary; font-size: Theme.fs-md;
+                                horizontal-stretch: 1; overflow: elide;
+                                vertical-alignment: center;
+                            }
+                            IconButton {
+                                glyph: "\u{E037}"; font-family: "Material Icons";
+                                fg: Theme.success; tooltip: root.lang-en ? "Run on this terminal" : "在当前终端执行";
+                                clicked => { root.activate(i, true); }
+                            }
+                            IconButton {
+                                glyph: "\u{E14D}"; font-family: "Material Icons";
+                                tooltip: root.lang-en ? "Copy" : "复制";
+                                clicked => { root.copy(i); }
+                            }
+                            IconButton {
+                                glyph: "×"; fg: Theme.danger;
+                                tooltip: root.lang-en ? "Delete" : "删除";
+                                clicked => { root.remove(i); }
+                            }
+                        }
+                    }
+                }
+            }
+            HorizontalLayout {
+                height: 28px; spacing: 8px;
+                Text {
+                    text: root.lang-en ? "↑↓ Select · Enter Fill · Ctrl+Enter Run · Esc Close"
+                        : "↑↓ 选择 · 回车填入 · Ctrl+回车执行 · Esc 关闭";
+                    color: Theme.text-muted; font-size: Theme.fs-xs;
+                    horizontal-stretch: 1; vertical-alignment: center;
+                }
+                if !root.quick : Button {
+                    text: root.clear-armed ? (root.lang-en ? "Confirm clear all" : "确认清空全部")
+                        : (root.lang-en ? "Clear all history" : "清空全部历史");
+                    enabled: root.rows.length > 0;
+                    clicked => {
+                        if root.clear-armed { root.clear-history(); root.clear-armed = false; }
+                        else { root.clear-armed = true; }
+                    }
+                }
+                if root.quick : Button {
+                    text: root.lang-en ? "Manage…" : "管理…";
+                    clicked => { root.manage(); }
+                }
+            }
+            search-input := LineEdit {
+                text <=> root.query;
+                placeholder-text: root.lang-en ? "Search commands…" : "输入关键词搜索命令…";
+                edited => { root.clear-armed = false; root.search(); }
+            }
+        }
+    }
+}

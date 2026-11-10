@@ -1323,6 +1323,10 @@ impl ConfigStore {
         }
     }
 
+    pub fn clear_command_history(&mut self) {
+        self.cache.command_history.clear();
+    }
+
     /// Collapse the resource sidebar on startup (default false) (#78).
     pub fn collapse_sidebar_default(&self) -> bool {
         self.cache.collapse_sidebar_default

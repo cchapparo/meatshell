@@ -10,6 +10,7 @@ pub(super) fn wire_key_input(
     store: Rc<RefCell<ConfigStore>>,
     ctx: ConnectCtx,
 ) {
+    super::command_popup::wire(window);
     wire_tunnel_callbacks(
         window,
         handles.clone(),
@@ -45,6 +46,27 @@ pub(super) fn wire_key_input(
                 }
             },
         );
+    }
+    // Clearing is confirmed by the popup; persist before refreshing its model.
+    {
+        let store = store.clone();
+        let weak = window.as_weak();
+        window.on_clear_command_history(move || {
+            let mut s = store.borrow_mut();
+            let previous = s.command_history().to_vec();
+            s.clear_command_history();
+            if let Err(error) = s.save() {
+                for cmd in previous {
+                    s.push_command_history(cmd);
+                }
+                tracing::error!("Failed to clear command history: {error}");
+                return;
+            }
+            if let Some(w) = weak.upgrade() {
+                w.set_command_history(history_model(&s));
+                set_history_view(&w, &s, "");
+            }
+        });
     }
     // Copy a history command to the clipboard (#96).
     {

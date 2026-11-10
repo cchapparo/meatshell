@@ -1,6 +1,6 @@
 // Window-local modal identities. AppWindow defines their priority in one place.
 export enum ModalKind {
-    none, shortcuts, about, settings, quick-commands, session, batch-import, finalshell-key-import,
+    none, shortcuts, about, settings, quick-commands, command-popup, session, batch-import, finalshell-key-import,
     group, tab-rename, command-group, sftp-prompt, permissions, paste-confirm,
     delete-confirm, host-key, credentials, mfa, exit-confirm
 }
@@ -82,6 +82,7 @@ export component ModalLayer inherits Rectangle {
     in property <bool> raw-keys: false;
     callback cancel-requested();
     callback confirm-requested();
+    callback focus-initial();
     visible: root.is-open && !root.covered;
     background: #00000080;
     TouchArea {
@@ -96,6 +97,7 @@ export component ModalLayer inherits Rectangle {
         raw-keys: root.raw-keys;
         cancel-requested => { root.cancel-requested(); }
         confirm-requested => { root.confirm-requested(); }
+        focus-initial => { root.focus-initial(); }
         @children
     }
 }

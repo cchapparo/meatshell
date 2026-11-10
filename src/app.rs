@@ -9,6 +9,7 @@ mod agents;
 mod auth_dialogs;
 mod aux_windows;
 mod color_theme;
+mod command_popup;
 pub(crate) mod core;
 mod dock_stacks;
 mod drag_out;

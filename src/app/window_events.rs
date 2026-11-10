@@ -31,6 +31,7 @@ pub(super) fn install_window_event_hook(
             MouseScrollDelta, TouchPhase, WindowEvent as WEvent,
         };
         use i_slint_backend_winit::EventResult;
+        use i_slint_backend_winit::winit::keyboard::{Key, NamedKey};
         let weak = window.as_weak();
         let sh = sftp_handles.clone();
         let wheel_bufs = bufs.clone();
@@ -56,6 +57,7 @@ pub(super) fn install_window_event_hook(
         // Apply the Win11 rounded-corner hint once, on the first event (the HWND
         // reliably exists by then, unlike a pre-run timer) (#166).
         let mut chrome_done = false;
+        let mut alt_tap = super::command_popup::AltTapTracker::default();
         window
             .window()
             .on_winit_window_event(move |slint_window, event| {
@@ -94,12 +96,42 @@ pub(super) fn install_window_event_hook(
                         }
                     }
                 };
+                // Mouse gestures and IME composition also make an Alt press a
+                // chord. Track them before the existing platform-specific arms.
                 match event {
-                    #[cfg(target_os = "windows")]
-                    WEvent::KeyboardInput { event, .. } => {
+                    WEvent::MouseInput { state, button, .. } => alt_tap.mouse(*button, *state),
+                    WEvent::MouseWheel { .. } | WEvent::Touch(_) => alt_tap.cancel(),
+                    WEvent::Ime(i_slint_backend_winit::winit::event::Ime::Preedit(text, _))
+                        if !text.is_empty() => alt_tap.cancel(),
+                    WEvent::Ime(i_slint_backend_winit::winit::event::Ime::Commit(_)) => alt_tap.cancel(),
+                    _ => {}
+                }
+                match event {
+                    WEvent::ModifiersChanged(modifiers) => alt_tap.modifiers(modifiers.state()),
+                    WEvent::KeyboardInput { event, is_synthetic, .. } => {
+                        if *is_synthetic {
+                            alt_tap.reset();
+                        } else if alt_tap.key(
+                            event.physical_key,
+                            event.state,
+                            event.repeat,
+                            matches!(event.logical_key, Key::Named(NamedKey::AltGraph)),
+                        ) {
+                            let weak = weak.clone();
+                            // Let Slint observe the modifier release first, and
+                            // defer focus until its IME/layout callbacks finish.
+                            slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                                if let Some(w) = weak.upgrade() {
+                                    if w.get_window_focused() {
+                                        w.invoke_toggle_command_popup();
+                                    }
+                                }
+                            });
+                        }
                         // Microsoft IME can relabel a Ctrl key-up as Process while
                         // retaining the physical Ctrl scan code. Slint drops Process,
                         // so deliver the missing modifier release directly.
+                        #[cfg(target_os = "windows")]
                         if let Some(side) = windows_process_ctrl_release(
                             event.state,
                             &event.logical_key,
@@ -224,6 +256,12 @@ pub(super) fn install_window_event_hook(
                         }
                     }
                     WEvent::Focused(f) => {
+                        alt_tap.reset();
+                        if !*f {
+                            if let Some(w) = weak.upgrade() {
+                                w.set_command_popup_open(false);
+                            }
+                        }
                         focused = *f;
                         apply_activity(focused, minimized, occluded);
                         if *f {

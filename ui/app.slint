@@ -33,6 +33,8 @@ import { InterfacePanel, OutputRuleItem, WslProfileInfo, CustomAgentInfo, Update
 // Re-export so `slint::include_modules!` generates the detached Rust window types.
 export { ProcWindow, SystemInfoWindow, EditorWindow }
 import { ComboBox, SpinBox, LineEdit, Button, ScrollView, CheckBox, Palette } from "std-widgets.slint";
+import { CommandPopup, CommandPopupRow } from "command_popup.slint";
+export { CommandPopupRow }
 
 export { SessionInfo, LaunchItem, SessionDraft, JumpHop, TabInfo, SftpEntry, SftpTreeNode, TunnelInfo, QuickCmd, PortFwd, WslProfileInfo, CustomAgentInfo, UpdateMirrorRow, ThemePalette, ColorThemeItem }
 
@@ -642,6 +644,26 @@ export component AppWindow inherits Window {
     property <bool> quick-external-send-enter;
     property <int> quick-external-sequence;
     in property <[string]> command-history;          // oldest first (newest last, #113)
+    in-out property <bool> command-popup-open: false;
+    out property <bool> command-popup-active: root.active-modal == ModalKind.command-popup;
+    in-out property <string> command-popup-tab;
+    in-out property <string> command-popup-query;
+    in-out property <bool> command-popup-quick: false;
+    in property <[CommandPopupRow]> command-popup-rows;
+    callback toggle-command-popup();
+    callback refresh-command-popup();
+    callback command-popup-activate(int, bool);
+    callback command-popup-copy(int);
+    callback command-popup-remove(int);
+    callback clear-command-history();
+    callback recall-command(string);
+    recall-command(command) => {
+        root.quick-external-command = command;
+        root.quick-external-send-enter = false;
+        root.quick-external-sequence += 1;
+    }
+    changed command-history => { if root.command-popup-open { root.refresh-command-popup(); } }
+    changed quick-commands => { if root.command-popup-open { root.refresh-command-popup(); } }
     in property <[string]> history-view;             // filtered dropdown, oldest first (newest last, #101)
     in property <[string]> history-preview;          // history-view flattened to one line each (#419)
     callback run-command(string /* tab-id */, string /* cmd */, bool /* to-all */);
@@ -1188,6 +1210,7 @@ export component AppWindow inherits Window {
         root.finalshell-key-import-open ? ModalKind.finalshell-key-import :
         root.batch-import-open ? ModalKind.batch-import :
         root.dialog-open ? ModalKind.session :
+        root.command-popup-open ? ModalKind.command-popup :
         root.quick-cmd-manage-open ? ModalKind.quick-commands :
         root.interface-open ? ModalKind.settings :
         root.about-open ? ModalKind.about :
@@ -1327,6 +1350,7 @@ export component AppWindow inherits Window {
     // is now active.  Fired on every active-tab change, UI- or code-driven.
     callback refresh-sidebar();
     changed active-tab-id => {
+        root.command-popup-open = false;
         root.refresh-sidebar();
         // Closing the last session destroys the terminal's IME focus anchor
         // and nothing else re-claims focus — with no focused item, Slint
@@ -2288,6 +2312,7 @@ export component AppWindow inherits Window {
                         quick-sidebar-enabled: root.quick-commands-as-sidebar;
                         quick-panel-docked: root.quick-panel-open;
                         cmd-bar-hidden: root.cmd-bar-hidden;
+                        command-list-open: root.command-popup-open;
                         quick-external-command: root.quick-external-command;
                         quick-external-send-enter: root.quick-external-send-enter;
                         quick-external-sequence: root.quick-external-sequence;
@@ -3732,6 +3757,39 @@ export component AppWindow inherits Window {
             }
         }
     }
+
+    // --- Alt command popup ------------------------------------------------
+        if root.command-popup-open : ModalLayer {
+            is-open: root.command-popup-open;
+            covered: !root.command-popup-active;
+            is-mac: Theme.is-mac;
+            background: transparent;
+            dismiss-on-backdrop: true;
+            cancel-requested => { root.command-popup-open = false; }
+            focus-initial => { command-popup-card.focus-search(); }
+            command-popup-card := CommandPopup {
+                width: min(700px, parent.width - 40px);
+                height: min(460px, parent.height - 56px);
+                x: clamp(root.dock-central-x + (root.dock-central-w - self.width) / 2, 20px, parent.width - self.width - 20px);
+                y: (parent.height - self.height) / 2;
+                lang-en: root.lang-en;
+                rows: root.command-popup-rows;
+                query <=> root.command-popup-query;
+                quick <=> root.command-popup-quick;
+                search => { root.refresh-command-popup(); }
+                activate(i, execute) => { root.command-popup-activate(i, execute); }
+                copy(i) => { root.command-popup-copy(i); }
+                remove(i) => { root.command-popup-remove(i); }
+                clear-history => { root.clear-command-history(); }
+                manage => {
+                    root.command-popup-open = false;
+                    root.qcm-name = ""; root.qcm-command = ""; root.qcm-group = "";
+                    root.qcm-edit-index = -1;
+                    root.quick-cmd-manage-open = true;
+                }
+                close => { root.command-popup-open = false; }
+            }
+        }
 
     // --- Quick-command manage dialog (#55) --------------------------------
         if root.quick-cmd-manage-open : ModalLayer {

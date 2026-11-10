@@ -360,6 +360,16 @@ export component TerminalView inherits Rectangle {
     in property <[string]> history-preview;
     property <bool> send-to-all: false;
     in property <bool> cmd-bar-hidden: false;  // toolbar toggle hides the whole bar
+    in property <bool> command-list-open: false;
+    changed command-list-open => {
+        if root.command-list-open {
+            root.quick-open = false;
+            root.history-open = false;
+            root.history-autocomplete = false;
+            root.focus-pending = false;
+            root.command-focus-pending = false;
+        }
+    }
     // Effective terminal font size in px: per-session zoom override when > 0,
     // else the window/global size (Theme.term-font-size).
     in property <float> term-font-size-px: Theme.term-font-size / 1px;
@@ -511,6 +521,7 @@ export component TerminalView inherits Rectangle {
     // construction (on new TerminalView instantiation) finishes before focus
     // changes — avoids RefCell re-entry panic in WinitWindowAdapter (#AccessKit).
     property <bool> focus-pending: false;
+    property <bool> command-focus-pending: false;
 
     changed quick-external-sequence => {
         if (root.active) {
@@ -519,7 +530,8 @@ export component TerminalView inherits Rectangle {
                 root.focus-pending = true;
             } else {
                 cmd-input.text = root.quick-external-command;
-                cmd-input.focus();
+                root.focus-pending = false;
+                root.command-focus-pending = true;
             }
         }
     }
@@ -631,9 +643,15 @@ export component TerminalView inherits Rectangle {
 
     focus-defer-timer := Timer {
         interval: 0ms;
-        running: root.focus-pending;
+        running: !root.command-list-open && (root.focus-pending || root.command-focus-pending);
         triggered => {
-            if (root.focus-pending) {
+            if (root.command-focus-pending) {
+                cmd-input.focus();
+                cmd-input.select-all();
+                cmd-input.clear-selection();
+                root.command-focus-pending = false;
+                root.focus-pending = false;
+            } else if (root.focus-pending) {
                 ime-input.focus();
                 root.focus-pending = false;
             }

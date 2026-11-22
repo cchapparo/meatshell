@@ -846,3 +846,15 @@ msgstr "不要在高级参数中填写密码或令牌；参数会保存并显示
 
 msgid "Delete checked items"
 msgstr "删除选中项"
+
+msgid "Search quick commands…"
+msgstr "搜索快捷命令…"
+
+msgid "No matching commands"
+msgstr "没有匹配的命令"
+
+msgid "Add command…"
+msgstr "添加命令…"
+
+msgid "Run command"
+msgstr "执行命令"

@@ -663,7 +663,10 @@ export component AppWindow inherits Window {
         root.quick-external-sequence += 1;
     }
     changed command-history => { if root.command-popup-open { root.refresh-command-popup(); } }
-    changed quick-commands => { if root.command-popup-open { root.refresh-command-popup(); } }
+    changed quick-commands => {
+        if root.command-popup-open { root.refresh-command-popup(); }
+        root.refresh-bottom-commands();
+    }
     in property <[string]> history-view;             // filtered dropdown, oldest first (newest last, #101)
     in property <[string]> history-preview;          // history-view flattened to one line each (#419)
     callback run-command(string /* tab-id */, string /* cmd */, bool /* to-all */);
@@ -999,6 +1002,15 @@ export component AppWindow inherits Window {
     in-out property <length> sftp-panel-height: 220px; // shared; lets Rust locate the drop zone
     in-out property <length> sftp-panel-width: 380px;  // SFTP extent when docked left/right
     in-out property <string> sftp-dock: "bottom";      // SFTP dock edge, shared across tabs
+    in-out property <string> bottom-panel-tab: "files";
+    in-out property <string> bottom-quick-query;
+    in property <[QuickCmd]> bottom-quick-commands;
+    callback select-bottom-panel(string);
+    callback refresh-bottom-commands();
+    callback recall-bottom-command(string /* tab */, string /* command */);
+    callback execute-bottom-command(string /* tab */, string /* command */);
+    changed bottom-quick-query => { root.refresh-bottom-commands(); }
+
     callback pick-download-dir();            // open a folder picker
     callback open-download-dir();            // reveal the folder in the OS
     callback clear-transfers();              // wipe the transfer history
@@ -2274,6 +2286,13 @@ export component AppWindow inherits Window {
                         sftp-panel-width: term.sftp-panel-width;
                         set-sftp-panel-width(v) => { root.set-pane-sftp-width(term.id, v); }
                         sftp-dock <=> root.sftp-dock;
+                        bottom-panel-tab: root.bottom-panel-tab;
+                        command-connected: term.id == root.active-tab-id && root.conn-state == 1;
+                        bottom-quick-commands: root.bottom-quick-commands;
+                        bottom-quick-query <=> root.bottom-quick-query;
+                        select-bottom-panel(mode) => { root.select-bottom-panel(mode); }
+                        recall-bottom-command(c) => { root.recall-bottom-command(term.id, c); }
+                        execute-bottom-command(c) => { root.execute-bottom-command(term.id, c); }
                         sftp-collapsed: term.sftp-collapsed;
                         set-sftp-collapsed(v) => { root.set-pane-sftp-collapsed(term.id, v); }
                         sftp-saved-height: term.sftp-saved-height;

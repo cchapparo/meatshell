@@ -1,5 +1,89 @@
 use super::*;
 
+/// Search this view without mutating the shared model's collapse state or indices.
+fn bottom_command_model(source: &ModelRc<QuickCmd>, query: &str) -> ModelRc<QuickCmd> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return source.clone();
+    }
+    let mut rows = Vec::new();
+    let mut previous_group = String::new();
+    for mut row in source.iter() {
+        if ![&row.name, &row.command, &row.group]
+            .iter()
+            .any(|text| text.to_lowercase().contains(&query))
+        {
+            continue;
+        }
+        row.group_header = if row.group.as_str() != previous_group {
+            previous_group = row.group.to_string();
+            row.group.clone()
+        } else {
+            SharedString::default()
+        };
+        row.collapsed = false;
+        rows.push(row);
+    }
+    ModelRc::new(VecModel::from(rows))
+}
+
+pub(super) fn wire_bottom_commands(window: &AppWindow, store: Rc<RefCell<ConfigStore>>) {
+    let weak = window.as_weak();
+    window.on_refresh_bottom_commands(move || {
+        if let Some(w) = weak.upgrade() {
+            w.set_bottom_quick_commands(bottom_command_model(
+                &w.get_quick_commands(),
+                &w.get_bottom_quick_query(),
+            ));
+        }
+    });
+    window.invoke_refresh_bottom_commands();
+
+    let weak = window.as_weak();
+    window.on_select_bottom_panel(move |tab| {
+        let mut store = store.borrow_mut();
+        let previous = store.bottom_panel_tab().to_string();
+        store.set_bottom_panel_tab(&tab);
+        if let Err(error) = store.save() {
+            store.set_bottom_panel_tab(&previous);
+            tracing::error!("Failed to save bottom panel tab: {error:#}");
+            return;
+        }
+        let selected: SharedString = store.bottom_panel_tab().into();
+        drop(store);
+        if let Some(w) = weak.upgrade() {
+            w.set_bottom_panel_tab(selected);
+            // The new tab owns the dock; avoid a duplicate docked command list.
+            if w.get_bottom_panel_tab() == "quick-commands" && w.get_quick_panel_open() {
+                w.set_quick_panel_open(false);
+                w.invoke_dock_layout_changed();
+            }
+        }
+    });
+
+    let weak = window.as_weak();
+    window.on_recall_bottom_command(move |tab, command| {
+        if let Some(w) = weak.upgrade() {
+            if tab != w.get_active_tab_id() || !w.get_terminals().iter().any(|t| t.id == tab) {
+                return;
+            }
+            w.set_cmd_bar_hidden(false);
+            w.invoke_recall_command(command);
+        }
+    });
+    let weak = window.as_weak();
+    window.on_execute_bottom_command(move |tab, command| {
+        if let Some(w) = weak.upgrade() {
+            if tab == w.get_active_tab_id()
+                && w.get_tabs().iter().any(|t| t.id == tab && t.connected)
+                && w.get_terminals().iter().any(|t| t.id == tab)
+            {
+                w.invoke_run_command(tab, command, false);
+            }
+        }
+    });
+}
+
 pub(super) fn all_quick_group_names(store: &ConfigStore) -> std::collections::HashSet<String> {
     let cmds = store.quick_commands();
     let mut set: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -274,3 +358,7 @@ mod edit_index_tests {
         assert_eq!(edit_index_after_swap(1, 2, 0), 1);
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/app/bottom_panel.rs"]
+mod bottom_panel_tests;

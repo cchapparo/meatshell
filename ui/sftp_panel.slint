@@ -1,3 +1,4 @@
+import { QuickCmd, QuickCommandPanel } from "quick_command_panel.slint";
 import { Theme } from "theme.slint";
 import { ScrollView } from "std-widgets.slint";
 import { TabInfo } from "tabs.slint";
@@ -817,7 +818,19 @@ export component SftpPanel inherits Rectangle {
     // The right-clicked row is one of several checked rows: Delete then acts
     // on the whole selection, as in a file manager (#531).
     property <bool>   menu-on-selection: false;
-    property <string> panel-mode: "files";
+    in property <string> panel-mode: "files";
+    in property <bool> files-available: true;
+    in property <bool> command-connected: false;
+    in property <[QuickCmd]> quick-commands;
+    in-out property <string> quick-query;
+    callback select-panel(string);
+    callback quick-recall(string);
+    callback quick-execute(string);
+    callback quick-copy(string);
+    callback quick-edit(int);
+    callback quick-remove(int);
+    callback quick-toggle-group(string);
+    callback quick-manage();
     property <string> tunnel-kind: "local";
     property <string> tunnel-name: "";
     property <string> tunnel-bind: "127.0.0.1";
@@ -834,7 +847,7 @@ export component SftpPanel inherits Rectangle {
     // spans the full panel width — but the *content* area below is narrower by
     // the tree extent. Raise the narrow threshold so the toolbar adapts before
     // buttons get clipped at the right edge (#433).
-    property <bool> narrow-toolbar: root.width < (560px + (root.tree-shown ? root.tree-width + 5px : 0px));
+    property <bool> narrow-toolbar: root.panel-mode == "files" ? root.width < (660px + (root.tree-shown ? root.tree-width + 5px : 0px)) : root.width < 310px;
 
     property <length> column-menu-x: 8px;
     property <length> column-menu-y: 22px;
@@ -1110,13 +1123,14 @@ export component SftpPanel inherits Rectangle {
                     border-radius: Theme.radius-sm;
                     background: root.panel-mode == "files" ? Theme.accent : (files-tab-ta.has-hover ? Theme.bg-hover : transparent);
                     files-tab-ta := TouchArea {
+                        enabled: root.files-available;
                         mouse-cursor: pointer;
-                        clicked => { root.panel-mode = "files"; }
+                        clicked => { if root.files-available { root.select-panel("files"); } }
                     }
                     Text {
                         text: root.narrow-toolbar ? "\u{E2C7}" : @tr("Files");
                         font-family: root.narrow-toolbar ? "Material Icons" : Theme.ui-font-family;
-                        color: root.panel-mode == "files" ? #ffffff : Theme.text-secondary;
+                        color: !root.files-available ? Theme.text-muted : root.panel-mode == "files" ? #ffffff : Theme.text-secondary;
                         font-size: Theme.fs-xs;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -1128,13 +1142,35 @@ export component SftpPanel inherits Rectangle {
                     border-radius: Theme.radius-sm;
                     background: root.panel-mode == "tunnels" ? Theme.accent : (tunnels-tab-ta.has-hover ? Theme.bg-hover : transparent);
                     tunnels-tab-ta := TouchArea {
+                        enabled: root.files-available;
                         mouse-cursor: pointer;
-                        clicked => { root.panel-mode = "tunnels"; }
+                        clicked => { if root.files-available { root.select-panel("tunnels"); } }
                     }
                     Text {
                         text: root.narrow-toolbar ? "\u{E0B6}" : @tr("Tunnels");
                         font-family: root.narrow-toolbar ? "Material Icons" : Theme.ui-font-family;
-                        color: root.panel-mode == "tunnels" ? #ffffff : Theme.text-secondary;
+                        color: !root.files-available ? Theme.text-muted : root.panel-mode == "tunnels" ? #ffffff : Theme.text-secondary;
+                        font-size: Theme.fs-xs;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    width: root.narrow-toolbar ? 28px : 100px;
+                    height: 22px;
+                    border-radius: Theme.radius-sm;
+                    background: root.panel-mode == "quick-commands" ? Theme.accent : (quick-tab-area.has-hover ? Theme.bg-hover : transparent);
+                    accessible-role: tab;
+                    accessible-label: @tr("Quick commands");
+                    quick-tab-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.select-panel("quick-commands"); }
+                    }
+                    Text {
+                        text: root.narrow-toolbar ? "\u{E86F}" : @tr("Quick commands");
+                        font-family: root.narrow-toolbar ? "Material Icons" : Theme.ui-font-family;
+                        color: root.panel-mode == "quick-commands" ? #ffffff : Theme.text-secondary;
                         font-size: Theme.fs-xs;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -1489,6 +1525,20 @@ export component SftpPanel inherits Rectangle {
                     }
                 }
             }
+        }
+
+        if root.panel-mode == "quick-commands" : QuickCommandPanel {
+            vertical-stretch: 1;
+            commands: root.quick-commands;
+            connected: root.command-connected;
+            query <=> root.quick-query;
+            recall(c) => { root.quick-recall(c); }
+            execute(c) => { root.quick-execute(c); }
+            copy-command(c) => { root.quick-copy(c); }
+            edit(i) => { root.quick-edit(i); }
+            remove(i) => { root.quick-remove(i); }
+            toggle-group(g) => { root.quick-toggle-group(g); }
+            manage => { root.quick-manage(); }
         }
 
         // --- Main area: tree (left) + file list (right) --------------------

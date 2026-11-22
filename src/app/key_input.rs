@@ -11,6 +11,7 @@ pub(super) fn wire_key_input(
     ctx: ConnectCtx,
 ) {
     super::command_popup::wire(window);
+    super::quick_commands::wire_bottom_commands(window, store.clone());
     wire_tunnel_callbacks(
         window,
         handles.clone(),

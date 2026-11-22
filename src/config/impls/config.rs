@@ -1694,6 +1694,19 @@ impl ConfigStore {
         }
         self.cache.sftp_visible_columns = normalized;
     }
+    pub fn bottom_panel_tab(&self) -> &str {
+        match self.cache.bottom_panel_tab.as_str() {
+            "tunnels" => "tunnels",
+            "quick-commands" => "quick-commands",
+            _ => "files",
+        }
+    }
+    pub fn set_bottom_panel_tab(&mut self, tab: &str) {
+        self.cache.bottom_panel_tab = match tab {
+            "tunnels" | "quick-commands" => tab.to_string(),
+            _ => "files".to_string(),
+        };
+    }
     pub fn sftp_dock(&self) -> String {
         let d = self.cache.sftp_dock.trim();
         if d.is_empty() {
@@ -2149,6 +2162,25 @@ mod tests {
             cache: ConfigFile::default(),
             key: [7u8; 32],
         }
+    }
+
+    #[test]
+    fn bottom_panel_tab_persists_and_legacy_or_unknown_values_use_files() {
+        let mut store = temp_store();
+        assert_eq!(store.bottom_panel_tab(), "files");
+        for tab in ["quick-commands", "tunnels", "files"] {
+            store.set_bottom_panel_tab(tab);
+            store.save().unwrap();
+            store.cache = serde_json::from_slice(&fs::read(&store.path).unwrap()).unwrap();
+            assert_eq!(store.bottom_panel_tab(), tab);
+        }
+        store.set_bottom_panel_tab("unknown");
+        assert_eq!(store.bottom_panel_tab(), "files");
+        store.cache = serde_json::from_str(r#"{"bottom_panel_tab":"future-tab"}"#).unwrap();
+        assert_eq!(store.bottom_panel_tab(), "files");
+        store.cache = serde_json::from_str("{}").unwrap();
+        assert_eq!(store.bottom_panel_tab(), "files");
+        let _ = fs::remove_file(store.path);
     }
 
     #[test]

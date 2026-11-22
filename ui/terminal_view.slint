@@ -1,3 +1,5 @@
+export { QuickCmd } from "quick_command_panel.slint";
+import { QuickCmd } from "quick_command_panel.slint";
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { SftpPanel, SftpEntry, SftpTreeNode, TunnelInfo } from "sftp_panel.slint";
@@ -37,25 +39,6 @@ export struct TermMatch {
     row: int,
     col: int,
     len: int,
-}
-
-// One saved quick command (#55): a name shown on the chip + the text to send.
-// Grouped like the welcome session list: group-header is non-empty on the first
-// row of each group; collapsed hides the group's rows in the popup; orig-index
-// points back to the entry's position in the stored list (delete target).
-export struct QuickCmd {
-    name: string,
-    command: string,
-    group: string,
-    group-header: string,
-    collapsed: bool,
-    orig-index: int,
-    // false → clicking only fills the input box (no trailing Return), so the
-    // command can be tweaked before sending; true → send + execute (B站 suggestion).
-    send-enter: bool,
-    // `command` flattened to one line for display (#419); multi-line commands
-    // used to overflow their fixed-height rows.
-    command-preview: string,
 }
 
 // --- MenuItem --------------------------------------------------------------
@@ -305,6 +288,13 @@ export component TerminalView inherits Rectangle {
     in property <bool> sftp-show-owner: true;
     in property <bool> sftp-show-group: true;
     in property <bool> sftp-available: true;
+    in property <string> bottom-panel-tab: "files";
+    in property <bool> command-connected: false;
+    in property <[QuickCmd]> bottom-quick-commands;
+    in-out property <string> bottom-quick-query;
+    callback select-bottom-panel(string);
+    callback recall-bottom-command(string);
+    callback execute-bottom-command(string);
     in property <[TunnelInfo]> tunnels: [];
 
     // Split (dual-pane) view: local folder on the left, remote on the right.
@@ -2197,7 +2187,7 @@ export component TerminalView inherits Rectangle {
 
         // --- SFTP resize splitter (orientation follows the dock edge) -------
         Rectangle {
-            visible: root.sftp-available && !root.sftp-collapsed;   // gone when collapsed (like the resource splitter)
+            visible: !root.sftp-collapsed;   // gone when collapsed (like the resource splitter)
             x: root.sftp-dock == "left"   ? parent.sf-w
              : root.sftp-dock == "right"  ? parent.width - parent.sf-w - 4px
              : 0px;
@@ -2252,7 +2242,20 @@ export component TerminalView inherits Rectangle {
         }
 
         // --- SFTP panel — positioned on the docked edge ---------------------
-        if root.sftp-available : SftpPanel {
+        SftpPanel {
+            panel-mode: root.sftp-available ? root.bottom-panel-tab : "quick-commands";
+            files-available: root.sftp-available;
+            command-connected: root.command-connected;
+            select-panel(mode) => { root.select-bottom-panel(mode); }
+            quick-commands: root.bottom-quick-commands;
+            quick-query <=> root.bottom-quick-query;
+            quick-recall(c) => { root.recall-bottom-command(c); }
+            quick-execute(c) => { root.execute-bottom-command(c); }
+            quick-copy(c) => { root.copy-text(c); }
+            quick-edit(i) => { root.edit-quick-command(i); }
+            quick-remove(i) => { root.delete-quick-command(i); }
+            quick-toggle-group(g) => { root.toggle-quick-group(g); }
+            quick-manage => { root.manage-quick-commands(); }
             x: root.sftp-dock == "right"  ? parent.width - parent.sf-w : 0px;
             y: root.sftp-dock == "bottom" ? parent.height - parent.sf-h : 0px;
             width:  root.sftp-horizontal ? parent.sf-w : parent.width;
@@ -2406,14 +2409,9 @@ export component TerminalView inherits Rectangle {
             width:  root.sftp-horizontal ? parent.sf-w : parent.width;
             height: root.sftp-horizontal ? parent.height : parent.sf-h;
             dock-edge: root.sftp-dock;
-            glyph: "\u{E2C7}";   // folder — SFTP
-            tooltip: root.sftp-available ? "SFTP" : @tr("SFTP not available");
-            enabled: root.sftp-available;
-            expand => {
-                if (root.sftp-available) {
-                    root.set-sftp-collapsed(false);
-                }
-            }
+            glyph: root.bottom-panel-tab == "quick-commands" || !root.sftp-available ? "\u{E86F}" : "\u{E2C7}";
+            tooltip: root.bottom-panel-tab == "quick-commands" || !root.sftp-available ? @tr("Quick commands") : "SFTP";
+            expand => { root.set-sftp-collapsed(false); }
         }
 
         }

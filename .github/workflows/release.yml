@@ -3,13 +3,18 @@ name: Release
 # Build native packages for Windows / Linux / macOS.
 #  - Push a tag like `v0.2.3`  -> builds all platforms and attaches the archives
 #    to a GitHub Release.
-#  - Run manually (workflow_dispatch) -> builds all platforms and uploads them as
-#    downloadable workflow artifacts (no release created).
+#  - Run manually (workflow_dispatch) -> all platforms by default, or Windows
+#    only with windows_only; uploads workflow artifacts (no release created).
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      windows_only:
+        description: Build only the Windows ZIP and MSI packages
+        type: boolean
+        default: false
 
 permissions:
   contents: write   # needed to create / update the GitHub Release
@@ -81,28 +86,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # Manual Windows-only builds skip the other platform runners entirely.
+      # Tag builds and the default manual run still package every platform.
       matrix:
-        include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            name: windows-x86_64
-            bin: meatshell.exe
-          - os: ubuntu-22.04            # build on the oldest supported runner for
-            target: x86_64-unknown-linux-gnu   # broader glibc compatibility
-            name: linux-x86_64
-            bin: meatshell
-          - os: ubuntu-22.04-arm       # free native arm64 runner (public repos)
-            target: aarch64-unknown-linux-gnu  # builds the Linux ARM64 .tar.gz (#82)
-            name: linux-aarch64
-            bin: meatshell
-          - os: macos-14               # Apple Silicon
-            target: aarch64-apple-darwin
-            name: macos-aarch64
-            bin: meatshell
-          - os: macos-14               # Cross-compile Intel Mac on Apple Silicon
-            target: x86_64-apple-darwin
-            name: macos-x86_64
-            bin: meatshell
+        include: >-
+          ${{ fromJSON(
+            inputs.windows_only
+            && '[{"os":"windows-latest","target":"x86_64-pc-windows-msvc","name":"windows-x86_64","bin":"meatshell.exe"}]'
+            || '[{"os":"windows-latest","target":"x86_64-pc-windows-msvc","name":"windows-x86_64","bin":"meatshell.exe"},{"os":"ubuntu-22.04","target":"x86_64-unknown-linux-gnu","name":"linux-x86_64","bin":"meatshell"},{"os":"ubuntu-22.04-arm","target":"aarch64-unknown-linux-gnu","name":"linux-aarch64","bin":"meatshell"},{"os":"macos-14","target":"aarch64-apple-darwin","name":"macos-aarch64","bin":"meatshell"},{"os":"macos-14","target":"x86_64-apple-darwin","name":"macos-x86_64","bin":"meatshell"}]'
+          ) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -392,6 +384,7 @@ jobs:
           fail_on_unmatched_files: false
 
   build-flatpak:
+    if: ${{ !inputs.windows_only }}
     name: linux-x86_64-flatpak
     needs: [check-version, build]
     runs-on: ubuntu-22.04
@@ -439,6 +432,7 @@ jobs:
           fail_on_unmatched_files: true
 
   build-linux-aarch64-glibc228:
+    if: ${{ !inputs.windows_only }}
     name: linux-aarch64-glibc228
     needs: check-version
     runs-on: ubuntu-22.04-arm
@@ -534,6 +528,7 @@ jobs:
           fail_on_unmatched_files: true
 
   build-linux-x86_64-glibc228:
+    if: ${{ !inputs.windows_only }}
     name: linux-x86_64-glibc228
     needs: check-version
     runs-on: ubuntu-22.04

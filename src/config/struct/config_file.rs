@@ -258,6 +258,9 @@ pub struct ConfigFile {
     pub sftp_tree_width: f32,
     #[serde(default)]
     pub sftp_dock: String,
+    /// Last selected tab in the shared Files/Tunnels/Quick commands panel.
+    #[serde(default)]
+    pub bottom_panel_tab: String,
     /// Columns shown in the SFTP file list. Unknown values are ignored by the
     /// accessor so newer builds can safely read older or hand-edited configs.
     #[serde(default = "default_sftp_visible_columns")]

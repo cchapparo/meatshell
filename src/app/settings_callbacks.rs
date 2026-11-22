@@ -385,7 +385,9 @@ pub(super) fn wire_layout_prefs(ctx: &WinCtx) {
         let sidebar_dock = s.sidebar_dock();
         let welcome_as_sidebar = s.welcome_as_sidebar();
         let quick_commands_as_sidebar = s.quick_commands_as_sidebar();
-        let quick_panel_open = quick_commands_as_sidebar && s.quick_panel_open();
+        let quick_panel_open = quick_commands_as_sidebar
+            && s.quick_panel_open()
+            && s.bottom_panel_tab() != "quick-commands";
         let quick_panel_collapsed = s.quick_panel_collapsed();
         let quick_panel_dock = s.quick_panel_dock();
         let welcome_sidebar_dock = s.welcome_sidebar_dock();
@@ -423,6 +425,7 @@ pub(super) fn wire_layout_prefs(ctx: &WinCtx) {
         window.set_sftp_show_owner(columns.iter().any(|column| column == "owner"));
         window.set_sftp_show_group(columns.iter().any(|column| column == "group"));
         window.set_sftp_dock(s.sftp_dock().into());
+        window.set_bottom_panel_tab(s.bottom_panel_tab().into());
         window.set_quick_commands_as_sidebar(quick_commands_as_sidebar);
         window.set_quick_panel_open(quick_panel_open);
         window.set_quick_panel_collapsed(quick_panel_collapsed);

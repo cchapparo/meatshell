@@ -349,9 +349,21 @@ fn disk_images_are_refused_off_macos() {
 #[test]
 fn release_workflow_keeps_the_macos_update_zip() {
     let workflow = include_str!("../../.github/workflows/release.yml");
-    // Matrix names produce meatshell-<tag>-macos-<arch>.
-    assert!(workflow.contains("name: macos-aarch64"));
-    assert!(workflow.contains("name: macos-x86_64"));
+    // The default matrix still includes both updater-compatible macOS names;
+    // the optional manual Windows-only matrix must contain just Windows.
+    let matrix = |prefix: &str| -> Vec<serde_json::Value> {
+        let json = workflow.lines().find_map(|line| {
+            line.trim().strip_prefix(prefix)?.strip_suffix('\'')
+        }).unwrap();
+        serde_json::from_str(json).unwrap()
+    };
+    let all = matrix("|| '");
+    assert!(all.iter().any(|build| build["name"] == "macos-aarch64"));
+    assert!(all.iter().any(|build| build["name"] == "macos-x86_64"));
+    let windows = matrix("&& '");
+    assert_eq!(windows.len(), 1);
+    assert_eq!(windows[0]["name"], "windows-x86_64");
+    assert_eq!(windows[0]["os"], "windows-latest");
     assert!(workflow.contains(r#"STAGE="meatshell-${VERSION}-${{ matrix.name }}""#));
     // The macOS branch packs the bundle into that zip and hands it to the
     // mandatory attach step.

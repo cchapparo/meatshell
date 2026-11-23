@@ -1,5 +1,5 @@
 export { QuickCmd } from "quick_command_panel.slint";
-import { QuickCmd } from "quick_command_panel.slint";
+import { QuickCmd, QuickCommandTile } from "quick_command_panel.slint";
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { SftpPanel, SftpEntry, SftpTreeNode, TunnelInfo } from "sftp_panel.slint";
@@ -292,6 +292,8 @@ export component TerminalView inherits Rectangle {
     in property <bool> command-connected: false;
     in property <[QuickCmd]> bottom-quick-commands;
     in-out property <string> bottom-quick-query;
+    pure callback layout-bottom-commands([QuickCmd], float, float) -> [QuickCommandTile];
+    callback toggle-bottom-group(string);
     callback select-bottom-panel(string);
     callback recall-bottom-command(string);
     callback execute-bottom-command(string);
@@ -2248,13 +2250,13 @@ export component TerminalView inherits Rectangle {
             command-connected: root.command-connected;
             select-panel(mode) => { root.select-bottom-panel(mode); }
             quick-commands: root.bottom-quick-commands;
+            quick-layout(items, width, font-size) => { return root.layout-bottom-commands(items, width, font-size); }
             quick-query <=> root.bottom-quick-query;
             quick-recall(c) => { root.recall-bottom-command(c); }
             quick-execute(c) => { root.execute-bottom-command(c); }
             quick-copy(c) => { root.copy-text(c); }
             quick-edit(i) => { root.edit-quick-command(i); }
-            quick-remove(i) => { root.delete-quick-command(i); }
-            quick-toggle-group(g) => { root.toggle-quick-group(g); }
+            quick-toggle-group(g) => { root.toggle-bottom-group(g); }
             quick-manage => { root.manage-quick-commands(); }
             x: root.sftp-dock == "right"  ? parent.width - parent.sf-w : 0px;
             y: root.sftp-dock == "bottom" ? parent.height - parent.sf-h : 0px;

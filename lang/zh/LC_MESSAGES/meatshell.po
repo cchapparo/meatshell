@@ -858,3 +858,12 @@ msgstr "添加命令…"
 
 msgid "Run command"
 msgstr "执行命令"
+
+msgid "Fill command bar"
+msgstr "填入命令栏"
+
+msgid "Command editor"
+msgstr "命令编辑器"
+
+msgid "Current session"
+msgstr "当前会话"

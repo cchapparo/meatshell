@@ -1,5 +1,62 @@
 use super::*;
 
+/// Variable-width named tiles, laid out separately for each panel's viewport.
+/// Width is capped so one long name cannot force horizontal scrolling.
+fn layout_command_tiles(
+    source: &ModelRc<QuickCmd>,
+    available_width: f32,
+    font_size: f32,
+) -> ModelRc<crate::ui::QuickCommandTile> {
+    use unicode_width::UnicodeWidthStr;
+    let width = if available_width.is_finite() {
+        available_width.max(1.0)
+    } else {
+        1.0
+    };
+    let font = if font_size.is_finite() {
+        font_size.clamp(8.0, 40.0)
+    } else {
+        13.0
+    };
+    let mut tiles = Vec::new();
+    let (mut x, mut y) = (0.0_f32, 0.0_f32);
+    for item in source.iter() {
+        if !item.group_header.is_empty() {
+            if x > 0.0 {
+                y += 36.0;
+                x = 0.0;
+            }
+            tiles.push(crate::ui::QuickCommandTile {
+                item: item.clone(),
+                x: 0.0,
+                y,
+                width,
+                header: true,
+            });
+            y += 31.0;
+        }
+        if item.orig_index < 0 || item.collapsed {
+            continue;
+        }
+        let tile_width = (item.name.as_str().width() as f32 * font * 0.64 + 45.0)
+            .clamp(64.0, 300.0)
+            .min(width);
+        if x > 0.0 && x + tile_width > width {
+            x = 0.0;
+            y += 36.0;
+        }
+        tiles.push(crate::ui::QuickCommandTile {
+            item,
+            x,
+            y,
+            width: tile_width,
+            header: false,
+        });
+        x += tile_width + 5.0;
+    }
+    ModelRc::new(VecModel::from(tiles))
+}
+
 /// Search this view without mutating the shared model's collapse state or indices.
 fn bottom_command_model(source: &ModelRc<QuickCmd>, query: &str) -> ModelRc<QuickCmd> {
     let query = query.trim().to_lowercase();
@@ -28,16 +85,41 @@ fn bottom_command_model(source: &ModelRc<QuickCmd>, query: &str) -> ModelRc<Quic
 }
 
 pub(super) fn wire_bottom_commands(window: &AppWindow, store: Rc<RefCell<ConfigStore>>) {
+    window.on_layout_bottom_commands(move |source, width, font_size| {
+        layout_command_tiles(&source, width, font_size)
+    });
+    let collapsed = Rc::new(RefCell::new(std::collections::HashSet::<String>::new()));
+    let collapsed_refresh = collapsed.clone();
     let weak = window.as_weak();
     window.on_refresh_bottom_commands(move || {
         if let Some(w) = weak.upgrade() {
-            w.set_bottom_quick_commands(bottom_command_model(
-                &w.get_quick_commands(),
-                &w.get_bottom_quick_query(),
-            ));
+            let query = w.get_bottom_quick_query();
+            let rows = bottom_command_model(&w.get_quick_commands(), &query);
+            // The tiled view starts expanded, independently of popup fold state.
+            let rows: Vec<_> = rows
+                .iter()
+                .map(|mut row| {
+                    row.collapsed = query.trim().is_empty()
+                        && collapsed_refresh.borrow().contains(row.group.as_str());
+                    row
+                })
+                .collect();
+            w.set_bottom_quick_commands(ModelRc::new(VecModel::from(rows)));
         }
     });
     window.invoke_refresh_bottom_commands();
+    let weak = window.as_weak();
+    window.on_toggle_bottom_group(move |group| {
+        {
+            let mut groups = collapsed.borrow_mut();
+            if !groups.remove(group.as_str()) {
+                groups.insert(group.to_string());
+            }
+        }
+        if let Some(w) = weak.upgrade() {
+            w.invoke_refresh_bottom_commands();
+        }
+    });
 
     let weak = window.as_weak();
     window.on_select_bottom_panel(move |tab| {

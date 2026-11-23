@@ -1,4 +1,4 @@
-import { LineEdit } from "std-widgets.slint";
+import { LineEdit, TextEdit, Button } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
 // One saved quick command (#55): a name shown on the chip + the text to send.
@@ -20,181 +20,207 @@ export struct QuickCmd {
     command-preview: string,
 }
 
-component CommandAction inherits Rectangle {
-    in property <string> glyph;
-    in property <string> label;
-    in property <bool> enabled: true;
-    in property <color> tint: Theme.text-secondary;
-    callback clicked();
-    width: 28px;
-    height: 28px;
-    border-radius: Theme.radius-sm;
-    background: area.has-hover && root.enabled ? Theme.bg-hover : transparent;
-    accessible-role: button;
-    accessible-label: root.label;
-    area := TouchArea {
-        enabled: root.enabled;
-        mouse-cursor: root.enabled ? pointer : default;
-        clicked => { root.clicked(); }
-    }
-    Text {
-        text: root.glyph;
-        font-family: "Material Icons";
-        font-size: 17px;
-        color: root.enabled ? root.tint : Theme.text-muted;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
+// Positioned by the pure flow layout callback. Headers span a whole row.
+export struct QuickCommandTile {
+    item: QuickCmd,
+    x: float,
+    y: float,
+    width: float,
+    header: bool,
 }
 
-// All views use the same saved commands; only this view's search is separate.
+// Compact names flow from left to right and wrap to the next line.
 export component QuickCommandPanel inherits Rectangle {
     in property <[QuickCmd]> commands;
     in property <bool> connected: false;
     in-out property <string> query;
+    in-out property <string> draft;
+    in-out property <int> selected-index: -1;
+    in-out property <string> selected-name;
+    pure callback layout-commands([QuickCmd], float, float) -> [QuickCommandTile];
     callback recall(string);
     callback execute(string);
     callback copy-command(string);
     callback edit(int);
-    callback remove(int);
     callback toggle-group(string);
     callback manage();
+    property <bool> stacked: root.width < 620px;
+    property <length> left-width: root.stacked ? root.width : max(300px, root.width * 0.72);
+    property <[QuickCommandTile]> tiles: root.layout-commands(root.commands, max(1, tiles-view.width / 1px), Theme.fs-sm / 1px);
+    property <length> flow-height: root.tiles.length == 0 ? 0px
+        : (root.tiles[root.tiles.length - 1].y + 36) * 1px;
     background: Theme.bg-panel;
     clip: true;
 
-    VerticalLayout {
-        padding: 8px;
-        spacing: 5px;
-        LineEdit {
-            text <=> root.query;
-            placeholder-text: @tr("Search quick commands…");
-            accessible-label: @tr("Search quick commands…");
-        }
-        Flickable {
-            vertical-stretch: 1;
-            content-width: self.width;
-            content-height: max(self.height, command-list.preferred-height);
-            command-list := VerticalLayout {
-                spacing: 2px;
-                alignment: start;
+    // Left: groups and named command tiles. Only overflowing content scrolls.
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.left-width;
+        height: root.stacked ? max(100px, parent.height * 0.55) : parent.height;
+        VerticalLayout {
+            padding: 6px;
+            spacing: 4px;
+            LineEdit {
+                text <=> root.query;
+                placeholder-text: @tr("Search quick commands…");
+                accessible-label: @tr("Search quick commands…");
+            }
+            tiles-view := Flickable {
+                vertical-stretch: 1;
+                content-width: self.width;
+                content-height: max(self.height, root.flow-height);
                 if root.commands.length == 0 : Text {
-                    height: 48px;
+                    width: parent.width;
+                    height: 40px;
                     text: root.query == "" ? @tr("No quick commands yet") : @tr("No matching commands");
                     color: Theme.text-muted;
                     font-size: Theme.fs-sm;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
-                for q in root.commands : VerticalLayout {
-                    spacing: 2px;
-                    if q.group-header != "" : Rectangle {
-                        height: 28px;
-                        border-radius: Theme.radius-sm;
-                        background: group-area.has-hover ? Theme.bg-hover : transparent;
-                        group-area := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.toggle-group(q.group); }
+                for tile in root.tiles : Rectangle {
+                    x: tile.x * 1px;
+                    y: tile.y * 1px;
+                    width: tile.width * 1px;
+                    height: tile.header ? 27px : 32px;
+                    border-radius: Theme.radius-sm;
+                    background: tile.header ? Theme.bg-panel-alt
+                        : tile.item.orig-index == root.selected-index ? Theme.bg-active
+                        : name-area.has-hover ? Theme.bg-hover : transparent;
+                    if tile.header : HorizontalLayout {
+                        padding-left: 5px;
+                        spacing: 5px;
+                        Text {
+                            text: tile.item.collapsed ? "\u{E5CC}" : "\u{E5CF}";
+                            font-family: "Material Icons";
+                            color: Theme.text-muted;
+                            vertical-alignment: center;
                         }
-                        HorizontalLayout {
-                            padding-left: 5px;
-                            spacing: 5px;
-                            Text {
-                                text: q.collapsed ? "\u{E5CC}" : "\u{E5CF}";
-                                font-family: "Material Icons";
-                                color: Theme.text-muted;
-                                vertical-alignment: center;
-                            }
-                            Text {
-                                text: "\u{E2C7}";
-                                font-family: "Material Icons";
-                                color: Theme.text-muted;
-                                vertical-alignment: center;
-                            }
-                            Text {
-                                text: q.group;
-                                font-weight: 700;
-                                font-size: Theme.fs-sm;
-                                color: Theme.text-secondary;
-                                overflow: elide;
-                                horizontal-stretch: 1;
-                                vertical-alignment: center;
+                        Text {
+                            text: "\u{E2C7}";
+                            font-family: "Material Icons";
+                            color: Theme.text-secondary;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: tile.item.group;
+                            font-size: Theme.fs-sm;
+                            color: Theme.text-primary;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                    name-area := TouchArea {
+                        width: tile.header ? parent.width : max(0px, parent.width - 27px);
+                        mouse-cursor: pointer;
+                        clicked => {
+                            if tile.header { root.toggle-group(tile.item.group); }
+                            else {
+                                root.selected-index = tile.item.orig-index;
+                                root.selected-name = tile.item.name;
+                                root.draft = tile.item.command;
                             }
                         }
                     }
-                    if !q.collapsed && q.orig-index >= 0 : Rectangle {
-                        height: root.width < 520px ? 60px : 36px;
-                        background: recall-area.has-hover ? Theme.bg-hover : transparent;
+                    if !tile.header : Text {
+                        x: 7px;
+                        width: max(0px, parent.width - 36px);
+                        height: parent.height;
+                        text: tile.item.name;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-sm;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    if !tile.header : Rectangle {
+                        x: parent.width - 27px;
+                        width: 26px;
+                        height: parent.height;
                         border-radius: Theme.radius-sm;
-                        recall-area := TouchArea {
-                            width: parent.width - 116px;
+                        background: settings-area.has-hover ? Theme.bg-hover : transparent;
+                        accessible-role: button;
+                        accessible-label: @tr("Edit") + " " + tile.item.name;
+                        settings-area := TouchArea {
                             mouse-cursor: pointer;
-                            clicked => { root.recall(q.command); }
-                        }
-                        // Stack name/preview on narrow docks; keep actions visible.
-                        Text {
-                            x: 9px;
-                            y: root.width < 520px ? 4px : 0px;
-                            width: root.width < 520px ? parent.width - 130px : min(200px, parent.width * 0.27);
-                            height: root.width < 520px ? 25px : parent.height;
-                            text: q.name;
-                            color: Theme.text-primary;
-                            font-size: Theme.fs-sm;
-                            overflow: elide;
-                            vertical-alignment: center;
+                            clicked => { root.edit(tile.item.orig-index); }
                         }
                         Text {
-                            x: root.width < 520px ? 9px : min(200px, parent.width * 0.27) + 20px;
-                            y: root.width < 520px ? 29px : 0px;
-                            width: parent.width - self.x - 120px;
-                            height: root.width < 520px ? 24px : parent.height;
-                            text: q.command-preview;
-                            color: Theme.text-muted;
-                            font-size: Theme.fs-sm;
-                            overflow: elide;
+                            text: "\u{E8B8}";
+                            font-family: "Material Icons";
+                            font-size: 19px;
+                            color: Theme.accent;
+                            horizontal-alignment: center;
                             vertical-alignment: center;
-                        }
-                        HorizontalLayout {
-                            x: parent.width - 114px;
-                            y: (parent.height - 28px) / 2;
-                            width: 112px;
-                            height: 28px;
-                            spacing: 0;
-                            CommandAction {
-                                glyph: "\u{E037}"; label: @tr("Run command");
-                                enabled: root.connected; tint: Theme.success;
-                                clicked => { root.execute(q.command); }
-                            }
-                            CommandAction {
-                                glyph: "\u{E14D}"; label: @tr("Copy");
-                                clicked => { root.copy-command(q.command); }
-                            }
-                            CommandAction {
-                                glyph: "\u{E3C9}"; label: @tr("Edit");
-                                clicked => { root.edit(q.orig-index); }
-                            }
-                            CommandAction {
-                                glyph: "\u{E872}"; label: @tr("Delete");
-                                clicked => { root.remove(q.orig-index); }
-                            }
                         }
                     }
                 }
             }
-        }
-        Rectangle {
-            height: 28px;
-            background: manage-area.has-hover ? Theme.bg-hover : transparent;
-            border-radius: Theme.radius-sm;
-            manage-area := TouchArea {
-                mouse-cursor: pointer;
-                clicked => { root.manage(); }
+            HorizontalLayout {
+                height: 28px;
+                spacing: 6px;
+                Button {
+                    text: root.commands.length == 0 && root.query == "" ? @tr("Add command…") : @tr("Manage…");
+                    clicked => { root.manage(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Button {
+                    text: @tr("Fill command bar");
+                    enabled: root.draft != "";
+                    clicked => { root.recall(root.draft); }
+                }
             }
+        }
+    }
+
+    // Right: editable full command, including multiline scripts.
+    Rectangle {
+        x: root.stacked ? 0px : root.left-width;
+        y: root.stacked ? max(100px, parent.height * 0.55) : 0px;
+        width: root.stacked ? parent.width : parent.width - root.left-width;
+        height: root.stacked ? parent.height - self.y : parent.height;
+        border-width: 1px;
+        border-color: Theme.border-subtle;
+        VerticalLayout {
+            padding: 5px;
+            spacing: 4px;
             Text {
-                text: root.commands.length == 0 && root.query == "" ? @tr("Add command…") : @tr("Manage…");
-                color: Theme.accent;
+                height: 24px;
+                text: root.selected-name == "" ? @tr("Command editor") : @tr("Command editor") + " · " + root.selected-name;
                 font-size: Theme.fs-sm;
-                horizontal-alignment: center;
+                color: Theme.text-secondary;
+                overflow: elide;
                 vertical-alignment: center;
+            }
+            TextEdit {
+                text <=> root.draft;
+                wrap: word-wrap;
+                vertical-stretch: 1;
+                accessible-label: @tr("Command editor");
+            }
+            HorizontalLayout {
+                height: 28px;
+                spacing: 5px;
+                Button {
+                    text: @tr("Copy");
+                    enabled: root.draft != "";
+                    clicked => { root.copy-command(root.draft); }
+                }
+                Text {
+                    text: @tr("Current session");
+                    color: Theme.text-muted;
+                    font-size: Theme.fs-xs;
+                    horizontal-stretch: 1;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+                Button {
+                    text: @tr("Send");
+                    primary: true;
+                    enabled: root.connected && root.draft != "";
+                    clicked => { root.execute(root.draft); }
+                }
             }
         }
     }

@@ -23,6 +23,8 @@ import { ConfirmDialog } from "confirm_dialog.slint";
 import { ModalLayer, ModalKind } from "modal.slint";
 import { FinalShellKeyDialog } from "finalshell_key_dialog.slint";
 import { LabeledInput, PrimaryButton, GhostButton, DockExpandButton, IconButton, ToolStrip } from "widgets.slint";
+import { QuickCommandTile } from "quick_command_panel.slint";
+export { QuickCommandTile }
 import { TerminalView, TermSpan, TermMatch, QuickCmd, QuickDockPanel } from "terminal_view.slint";
 import { SftpEntry, SftpTreeNode, TunnelInfo } from "sftp_panel.slint";
 import { ProcWindow, ProcRow } from "proc_window.slint";
@@ -1005,6 +1007,8 @@ export component AppWindow inherits Window {
     in-out property <string> bottom-panel-tab: "files";
     in-out property <string> bottom-quick-query;
     in property <[QuickCmd]> bottom-quick-commands;
+    pure callback layout-bottom-commands([QuickCmd], float, float) -> [QuickCommandTile];
+    callback toggle-bottom-group(string);
     callback select-bottom-panel(string);
     callback refresh-bottom-commands();
     callback recall-bottom-command(string /* tab */, string /* command */);
@@ -2289,8 +2293,10 @@ export component AppWindow inherits Window {
                         bottom-panel-tab: root.bottom-panel-tab;
                         command-connected: term.id == root.active-tab-id && root.conn-state == 1;
                         bottom-quick-commands: root.bottom-quick-commands;
+                        layout-bottom-commands(items, width, font-size) => { return root.layout-bottom-commands(items, width, font-size); }
                         bottom-quick-query <=> root.bottom-quick-query;
                         select-bottom-panel(mode) => { root.select-bottom-panel(mode); }
+                        toggle-bottom-group(group) => { root.toggle-bottom-group(group); }
                         recall-bottom-command(c) => { root.recall-bottom-command(term.id, c); }
                         execute-bottom-command(c) => { root.execute-bottom-command(term.id, c); }
                         sftp-collapsed: term.sftp-collapsed;

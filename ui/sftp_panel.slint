@@ -1,4 +1,4 @@
-import { QuickCmd, QuickCommandPanel } from "quick_command_panel.slint";
+import { QuickCmd, QuickCommandPanel, QuickCommandTile } from "quick_command_panel.slint";
 import { Theme } from "theme.slint";
 import { ScrollView } from "std-widgets.slint";
 import { TabInfo } from "tabs.slint";
@@ -828,7 +828,10 @@ export component SftpPanel inherits Rectangle {
     callback quick-execute(string);
     callback quick-copy(string);
     callback quick-edit(int);
-    callback quick-remove(int);
+    pure callback quick-layout([QuickCmd], float, float) -> [QuickCommandTile];
+    property <string> quick-draft;
+    property <string> quick-selected-name;
+    property <int> quick-selected-index: -1;
     callback quick-toggle-group(string);
     callback quick-manage();
     property <string> tunnel-kind: "local";
@@ -1536,7 +1539,10 @@ export component SftpPanel inherits Rectangle {
             execute(c) => { root.quick-execute(c); }
             copy-command(c) => { root.quick-copy(c); }
             edit(i) => { root.quick-edit(i); }
-            remove(i) => { root.quick-remove(i); }
+            layout-commands(items, width, font-size) => { return root.quick-layout(items, width, font-size); }
+            draft <=> root.quick-draft;
+            selected-index <=> root.quick-selected-index;
+            selected-name <=> root.quick-selected-name;
             toggle-group(g) => { root.quick-toggle-group(g); }
             manage => { root.quick-manage(); }
         }

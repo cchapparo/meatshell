@@ -2248,6 +2248,7 @@ export component TerminalView inherits Rectangle {
             panel-mode: root.sftp-available ? root.bottom-panel-tab : "quick-commands";
             files-available: root.sftp-available;
             command-connected: root.command-connected;
+            quick-active: root.active;
             select-panel(mode) => { root.select-bottom-panel(mode); }
             quick-commands: root.bottom-quick-commands;
             quick-layout(items, width, font-size) => { return root.layout-bottom-commands(items, width, font-size); }
@@ -2256,6 +2257,7 @@ export component TerminalView inherits Rectangle {
             quick-execute(c) => { root.execute-bottom-command(c); }
             quick-copy(c) => { root.copy-text(c); }
             quick-edit(i) => { root.edit-quick-command(i); }
+            quick-remove(i) => { root.delete-quick-command(i); }
             quick-toggle-group(g) => { root.toggle-bottom-group(g); }
             quick-manage => { root.manage-quick-commands(); }
             x: root.sftp-dock == "right"  ? parent.width - parent.sf-w : 0px;

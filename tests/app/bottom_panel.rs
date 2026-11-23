@@ -226,6 +226,9 @@ fn bottom_panel_controller_restores_selection_and_never_broadcasts() {
         let edited = Rc::new(Cell::new(-1));
         let calls = edited.clone();
         ui.on_edit_quick_command(move |i| calls.set(i));
+        let removed = Rc::new(Cell::new(-1));
+        let calls = removed.clone();
+        ui.on_delete_quick_command(move |i| calls.set(i));
         let ran = Rc::new(RefCell::new(Vec::new()));
         let calls = ran.clone();
         ui.on_run_command(move |tab, command, all| calls.borrow_mut().push((tab, command, all)));
@@ -254,6 +257,22 @@ fn bottom_panel_controller_restores_selection_and_never_broadcasts() {
                 button: slint::platform::PointerEventButton::Left,
             });
         };
+        let right_click = |x, y| {
+            let position = slint::LogicalPosition::new(x, y);
+            window.dispatch_event(WindowEvent::PointerMoved { position });
+            window.dispatch_event(WindowEvent::PointerPressed {
+                position,
+                button: slint::platform::PointerEventButton::Right,
+            });
+            window.dispatch_event(WindowEvent::PointerReleased {
+                position,
+                button: slint::platform::PointerEventButton::Right,
+            });
+        };
+        let key = |text: SharedString| {
+            window.dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+            window.dispatch_event(WindowEvent::KeyReleased { text });
+        };
         settle();
         click(120.0, 505.0);
         settle();
@@ -278,6 +297,57 @@ fn bottom_panel_controller_restores_selection_and_never_broadcasts() {
         click(1170.0, 762.0);
         assert_eq!(ran.borrow().last().unwrap().1, "apt update\napt upgrade");
         assert!(!ran.borrow().last().unwrap().2);
+        // Right-clicking a different tile leaves the editor and execution untouched.
+        let count = ran.borrow().len();
+        right_click(20.0, 611.0);
+        settle();
+        if let Ok(path) = std::env::var("MEATSHELL_COMMAND_CONTEXT_SCREENSHOT") {
+            let pixels = settle();
+            let raw: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
+            image::save_buffer(path, &raw, 1200, 800, image::ColorType::Rgb8).unwrap();
+        }
+        click(70.0, 663.0); // Copy the saved command, never the editor draft.
+        settle();
+        assert_eq!(
+            copied.borrow().last().unwrap(),
+            "bash <(curl -L -s https://example.com/check.sh)"
+        );
+        assert_eq!(ran.borrow().len(), count);
+        click(890.0, 762.0);
+        assert_eq!(copied.borrow().last().unwrap(), "apt update\napt upgrade");
+        right_click(20.0, 611.0);
+        settle();
+        click(70.0, 631.0);
+        assert_eq!(edited.get(), 4);
+        right_click(20.0, 611.0);
+        settle();
+        click(70.0, 695.0);
+        assert_eq!(removed.get(), 4);
+        assert_eq!(ran.borrow().len(), count);
+        // Gear right-click opens the same menu; Escape and outside click dismiss.
+        edited.set(-1);
+        right_click(270.0, 611.0);
+        settle();
+        key(Key::Escape.into());
+        key(Key::Return.into());
+        settle();
+        assert_eq!(edited.get(), -1);
+        click(890.0, 762.0);
+        assert_eq!(copied.borrow().last().unwrap(), "apt update\napt upgrade");
+        right_click(270.0, 611.0);
+        settle();
+        click(600.0, 530.0);
+        settle();
+        key(Key::Return.into());
+        assert_eq!(edited.get(), -1);
+        // Keyboard navigation also targets the clicked command.
+        copied.borrow_mut().clear();
+        right_click(270.0, 611.0);
+        settle();
+        key(Key::DownArrow.into());
+        key(Key::Return.into());
+        assert_eq!(copied.borrow().last().unwrap(), "apt update\napt upgrade");
+        assert_eq!(ran.borrow().len(), count);
         // The editor sends the modified multiline draft, not the saved script.
         click(950.0, 590.0);
         window.dispatch_event(WindowEvent::KeyPressed {
@@ -308,7 +378,36 @@ fn bottom_panel_controller_restores_selection_and_never_broadcasts() {
         assert_eq!(ui.get_bottom_quick_commands().row_count(), 1);
         click(110.0, 611.0);
         assert_eq!(edited.get(), 9);
+        edited.set(-1);
+        right_click(30.0, 611.0);
+        settle();
+        key(Key::Return.into());
+        assert_eq!(edited.get(), 9);
+        right_click(30.0, 611.0);
+        settle();
+        key(Key::DownArrow.into());
+        key(Key::DownArrow.into());
+        key(Key::Return.into());
+        assert_eq!(removed.get(), 9);
+        // A model change closes a menu rather than redirecting its saved index.
+        right_click(30.0, 611.0);
+        settle();
+        edited.set(-1);
+        ui.set_bottom_quick_query("bbr".into());
+        settle();
+        key(Key::Return.into());
+        assert_eq!(edited.get(), -1);
         ui.set_bottom_quick_query("".into());
+        settle();
+        // Switching the active terminal dismisses the old tab's menu.
+        edited.set(-1);
+        right_click(30.0, 611.0);
+        settle();
+        ui.set_active_tab_id("other".into());
+        settle();
+        key(Key::Return.into());
+        assert_eq!(edited.get(), -1);
+        ui.set_active_tab_id("ssh".into());
         settle();
         // A group fold affects this view, and search expands matching results.
         click(50.0, 578.0);

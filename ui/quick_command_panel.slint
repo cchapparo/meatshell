@@ -29,10 +29,42 @@ export struct QuickCommandTile {
     header: bool,
 }
 
+component CommandMenuItem inherits Rectangle {
+    in property <string> label;
+    in property <string> glyph;
+    in property <bool> selected: false;
+    in property <bool> destructive: false;
+    callback activate();
+    callback highlight();
+    height: 32px;
+    border-radius: Theme.radius-sm;
+    background: root.selected ? Theme.bg-hover : transparent;
+    accessible-role: button;
+    accessible-label: root.label;
+    action-area := TouchArea {
+        mouse-cursor: pointer;
+        moved => { root.highlight(); }
+        clicked => { root.activate(); }
+    }
+    HorizontalLayout {
+        padding-left: 9px; padding-right: 9px; spacing: 8px;
+        Text {
+            text: root.glyph; font-family: "Material Icons";
+            color: root.destructive ? Theme.danger : Theme.text-secondary;
+            font-size: Theme.fs-sm; vertical-alignment: center;
+        }
+        Text {
+            text: root.label; color: root.destructive ? Theme.danger : Theme.text-primary;
+            font-size: Theme.fs-sm; vertical-alignment: center; horizontal-stretch: 1;
+        }
+    }
+}
+
 // Compact names flow from left to right and wrap to the next line.
 export component QuickCommandPanel inherits Rectangle {
     in property <[QuickCmd]> commands;
     in property <bool> connected: false;
+    in property <bool> active: true;
     in-out property <string> query;
     in-out property <string> draft;
     in-out property <int> selected-index: -1;
@@ -42,6 +74,7 @@ export component QuickCommandPanel inherits Rectangle {
     callback execute(string);
     callback copy-command(string);
     callback edit(int);
+    callback remove(int);
     callback toggle-group(string);
     callback manage();
     property <bool> stacked: root.width < 620px;
@@ -49,6 +82,51 @@ export component QuickCommandPanel inherits Rectangle {
     property <[QuickCommandTile]> tiles: root.layout-commands(root.commands, max(1, tiles-view.width / 1px), Theme.fs-sm / 1px);
     property <length> flow-height: root.tiles.length == 0 ? 0px
         : (root.tiles[root.tiles.length - 1].y + 36) * 1px;
+    property <QuickCmd> context-item;
+    property <int> context-index: -1;
+    property <int> context-selection: 0;
+    property <length> context-x;
+    property <length> context-y;
+    property <bool> context-open: false;
+    changed commands => { root.close-context(); }
+    changed width => { root.close-context(); }
+    changed height => { root.close-context(); }
+    changed active => { if !root.active { root.close-context(); } }
+
+    function close-context() {
+        root.context-open = false;
+        command-menu.close();
+    }
+    function open-context(item: QuickCmd, index: int, px: length, py: length) {
+        if !root.active { return; }
+        root.context-item = item;
+        root.context-index = index;
+        root.context-selection = 0;
+        root.context-x = clamp(px, 0px, max(0px, root.width - 168px));
+        root.context-y = clamp(py, 0px, max(0px, root.height - 104px));
+        root.context-open = true;
+        command-menu.show();
+    }
+    function context-action(action: int) {
+        // Search, deletion or reordering must never redirect an open menu.
+        if !root.context-open || root.context-index < 0 || root.context-index >= root.tiles.length {
+            root.close-context(); return;
+        }
+        let current = root.tiles[root.context-index].item;
+        let target = root.context-item;
+        let valid = current.orig-index == target.orig-index && current.name == target.name
+            && current.command == target.command && current.group == target.group;
+        root.close-context();
+        if !valid { return; }
+        if action == 0 { root.edit(target.orig-index); }
+        else if action == 1 { root.copy-command(target.command); }
+        else if action == 2 {
+            if root.selected-index == target.orig-index {
+                root.selected-index = -1; root.selected-name = "";
+            } else if root.selected-index > target.orig-index { root.selected-index -= 1; }
+            root.remove(target.orig-index);
+        }
+    }
     background: Theme.bg-panel;
     clip: true;
 
@@ -79,7 +157,7 @@ export component QuickCommandPanel inherits Rectangle {
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
-                for tile in root.tiles : Rectangle {
+                for tile[index] in root.tiles : Rectangle {
                     x: tile.x * 1px;
                     y: tile.y * 1px;
                     width: tile.width * 1px;
@@ -115,6 +193,13 @@ export component QuickCommandPanel inherits Rectangle {
                     name-area := TouchArea {
                         width: tile.header ? parent.width : max(0px, parent.width - 27px);
                         mouse-cursor: pointer;
+                        pointer-event(event) => {
+                            if !tile.header && event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                                root.open-context(tile.item, index,
+                                    self.absolute-position.x - root.absolute-position.x + self.mouse-x,
+                                    self.absolute-position.y - root.absolute-position.y + self.mouse-y);
+                            }
+                        }
                         clicked => {
                             if tile.header { root.toggle-group(tile.item.group); }
                             else {
@@ -145,6 +230,13 @@ export component QuickCommandPanel inherits Rectangle {
                         settings-area := TouchArea {
                             mouse-cursor: pointer;
                             clicked => { root.edit(tile.item.orig-index); }
+                            pointer-event(event) => {
+                                if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                                    root.open-context(tile.item, index,
+                                        self.absolute-position.x - root.absolute-position.x + self.mouse-x,
+                                        self.absolute-position.y - root.absolute-position.y + self.mouse-y);
+                                }
+                            }
                         }
                         Text {
                             text: "\u{E8B8}";
@@ -224,4 +316,49 @@ export component QuickCommandPanel inherits Rectangle {
             }
         }
     }
+    command-menu := PopupWindow {
+        forward-focus: menu-keys;
+        x: root.context-x;
+        y: root.context-y;
+        width: 168px;
+        height: 104px;
+        menu-keys := FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.close-context(); }
+                else if event.text == Key.DownArrow { root.context-selection = mod(root.context-selection + 1, 3); }
+                else if event.text == Key.UpArrow { root.context-selection = mod(root.context-selection + 2, 3); }
+                else if event.text == Key.Return { root.context-action(root.context-selection); }
+                accept
+            }
+            Rectangle {
+                background: Theme.bg-elevated;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                VerticalLayout {
+                    padding: 4px; spacing: 0;
+                    CommandMenuItem {
+                        label: @tr("Edit"); glyph: "\u{E3C9}";
+                        selected: root.context-selection == 0;
+                        highlight => { root.context-selection = 0; }
+                        activate => { root.context-action(0); }
+                    }
+                    CommandMenuItem {
+                        label: @tr("Copy"); glyph: "\u{E14D}";
+                        selected: root.context-selection == 1;
+                        highlight => { root.context-selection = 1; }
+                        activate => { root.context-action(1); }
+                    }
+                    CommandMenuItem {
+                        label: @tr("Delete"); glyph: "\u{E872}";
+                        destructive: true;
+                        selected: root.context-selection == 2;
+                        highlight => { root.context-selection = 2; }
+                        activate => { root.context-action(2); }
+                    }
+                }
+            }
+        }
+    }
+
 }

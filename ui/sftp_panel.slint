@@ -828,6 +828,8 @@ export component SftpPanel inherits Rectangle {
     callback quick-execute(string);
     callback quick-copy(string);
     callback quick-edit(int);
+    callback quick-remove(int);
+    in property <bool> quick-active: true;
     pure callback quick-layout([QuickCmd], float, float) -> [QuickCommandTile];
     property <string> quick-draft;
     property <string> quick-selected-name;
@@ -1534,11 +1536,13 @@ export component SftpPanel inherits Rectangle {
             vertical-stretch: 1;
             commands: root.quick-commands;
             connected: root.command-connected;
+            active: root.quick-active && !root.collapsed;
             query <=> root.quick-query;
             recall(c) => { root.quick-recall(c); }
             execute(c) => { root.quick-execute(c); }
             copy-command(c) => { root.quick-copy(c); }
             edit(i) => { root.quick-edit(i); }
+            remove(i) => { root.quick-remove(i); }
             layout-commands(items, width, font-size) => { return root.quick-layout(items, width, font-size); }
             draft <=> root.quick-draft;
             selected-index <=> root.quick-selected-index;

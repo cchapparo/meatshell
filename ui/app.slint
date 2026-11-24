@@ -1011,7 +1011,6 @@ export component AppWindow inherits Window {
     callback toggle-bottom-group(string);
     callback select-bottom-panel(string);
     callback refresh-bottom-commands();
-    callback recall-bottom-command(string /* tab */, string /* command */);
     callback execute-bottom-command(string /* tab */, string /* command */);
     changed bottom-quick-query => { root.refresh-bottom-commands(); }
 
@@ -2297,7 +2296,6 @@ export component AppWindow inherits Window {
                         bottom-quick-query <=> root.bottom-quick-query;
                         select-bottom-panel(mode) => { root.select-bottom-panel(mode); }
                         toggle-bottom-group(group) => { root.toggle-bottom-group(group); }
-                        recall-bottom-command(c) => { root.recall-bottom-command(term.id, c); }
                         execute-bottom-command(c) => { root.execute-bottom-command(term.id, c); }
                         sftp-collapsed: term.sftp-collapsed;
                         set-sftp-collapsed(v) => { root.set-pane-sftp-collapsed(term.id, v); }

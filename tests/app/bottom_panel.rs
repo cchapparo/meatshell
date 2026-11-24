@@ -285,20 +285,28 @@ fn bottom_panel_controller_restores_selection_and_never_broadcasts() {
         assert_eq!(ui.get_bottom_panel_tab(), "quick-commands");
         assert!(!ui.get_quick_panel_open());
         assert_eq!(store.borrow().bottom_panel_tab(), "quick-commands");
-        // Tiles share a row and select the full script in the right editor.
+        // A single left click sends the full saved script exactly once, even
+        // when the legacy send_enter option is false. The command bar stays hidden.
         click(195.0, 611.0);
         settle();
         assert!(ui.get_cmd_bar_hidden());
-        assert!(ran.borrow().is_empty());
-        click(890.0, 762.0);
-        assert_eq!(copied.borrow().last().unwrap(), "apt update\napt upgrade");
+        assert_eq!(ran.borrow().len(), 1);
+        assert_eq!(
+            ran.borrow()[0],
+            ("ssh".into(), "apt update\napt upgrade".into(), false)
+        );
+        let count = ran.borrow().len();
         click(270.0, 611.0);
         assert_eq!(edited.get(), 9);
-        click(1170.0, 762.0);
-        assert_eq!(ran.borrow().last().unwrap().1, "apt update\napt upgrade");
+        assert_eq!(ran.borrow().len(), count);
+        // The previous editor area now holds clickable command tiles.
+        click(955.0, 611.0);
+        settle();
+        assert_eq!(ran.borrow().len(), count + 1);
+        assert_eq!(ran.borrow().last().unwrap().1, "echo uninstall");
         assert!(!ran.borrow().last().unwrap().2);
-        // Right-clicking a different tile leaves the editor and execution untouched.
         let count = ran.borrow().len();
+        // All management actions stay separate from execution.
         right_click(20.0, 611.0);
         settle();
         if let Ok(path) = std::env::var("MEATSHELL_COMMAND_CONTEXT_SCREENSHOT") {
@@ -306,15 +314,12 @@ fn bottom_panel_controller_restores_selection_and_never_broadcasts() {
             let raw: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
             image::save_buffer(path, &raw, 1200, 800, image::ColorType::Rgb8).unwrap();
         }
-        click(70.0, 663.0); // Copy the saved command, never the editor draft.
+        click(70.0, 663.0);
         settle();
         assert_eq!(
             copied.borrow().last().unwrap(),
             "bash <(curl -L -s https://example.com/check.sh)"
         );
-        assert_eq!(ran.borrow().len(), count);
-        click(890.0, 762.0);
-        assert_eq!(copied.borrow().last().unwrap(), "apt update\napt upgrade");
         right_click(20.0, 611.0);
         settle();
         click(70.0, 631.0);
@@ -324,23 +329,17 @@ fn bottom_panel_controller_restores_selection_and_never_broadcasts() {
         click(70.0, 695.0);
         assert_eq!(removed.get(), 4);
         assert_eq!(ran.borrow().len(), count);
-        // Gear right-click opens the same menu; Escape and outside click dismiss.
         edited.set(-1);
         right_click(270.0, 611.0);
         settle();
         key(Key::Escape.into());
-        key(Key::Return.into());
         settle();
         assert_eq!(edited.get(), -1);
-        click(890.0, 762.0);
-        assert_eq!(copied.borrow().last().unwrap(), "apt update\napt upgrade");
         right_click(270.0, 611.0);
         settle();
         click(600.0, 530.0);
         settle();
-        key(Key::Return.into());
         assert_eq!(edited.get(), -1);
-        // Keyboard navigation also targets the clicked command.
         copied.borrow_mut().clear();
         right_click(270.0, 611.0);
         settle();
@@ -348,37 +347,18 @@ fn bottom_panel_controller_restores_selection_and_never_broadcasts() {
         key(Key::Return.into());
         assert_eq!(copied.borrow().last().unwrap(), "apt update\napt upgrade");
         assert_eq!(ran.borrow().len(), count);
-        // The editor sends the modified multiline draft, not the saved script.
-        click(950.0, 590.0);
-        window.dispatch_event(WindowEvent::KeyPressed {
-            text: Key::Control.into(),
-        });
-        window.dispatch_event(WindowEvent::KeyPressed { text: "a".into() });
-        window.dispatch_event(WindowEvent::KeyReleased { text: "a".into() });
-        window.dispatch_event(WindowEvent::KeyReleased {
-            text: Key::Control.into(),
-        });
-        let draft = "printf 'edited'\necho done";
-        window.dispatch_event(WindowEvent::KeyPressed { text: draft.into() });
-        window.dispatch_event(WindowEvent::KeyReleased { text: draft.into() });
-        settle();
-        click(890.0, 762.0);
-        assert_eq!(copied.borrow().last().unwrap(), draft);
-        click(1170.0, 762.0);
-        assert_eq!(ran.borrow().last().unwrap().1, draft);
-        // Search still maps the gear to the saved command's original index.
+        // Searching preserves the original command identity for sending and management.
         click(100.0, 545.0);
-        window.dispatch_event(WindowEvent::KeyPressed {
-            text: "UPGRADE".into(),
-        });
-        window.dispatch_event(WindowEvent::KeyReleased {
-            text: "UPGRADE".into(),
-        });
+        key("UPGRADE".into());
         settle();
         assert_eq!(ui.get_bottom_quick_commands().row_count(), 1);
+        click(30.0, 611.0);
+        settle();
+        assert_eq!(ran.borrow().len(), count + 1);
+        assert_eq!(ran.borrow().last().unwrap().1, "apt update\napt upgrade");
+        let count = ran.borrow().len();
         click(110.0, 611.0);
         assert_eq!(edited.get(), 9);
-        edited.set(-1);
         right_click(30.0, 611.0);
         settle();
         key(Key::Return.into());
@@ -389,7 +369,6 @@ fn bottom_panel_controller_restores_selection_and_never_broadcasts() {
         key(Key::DownArrow.into());
         key(Key::Return.into());
         assert_eq!(removed.get(), 9);
-        // A model change closes a menu rather than redirecting its saved index.
         right_click(30.0, 611.0);
         settle();
         edited.set(-1);
@@ -399,7 +378,7 @@ fn bottom_panel_controller_restores_selection_and_never_broadcasts() {
         assert_eq!(edited.get(), -1);
         ui.set_bottom_quick_query("".into());
         settle();
-        // Switching the active terminal dismisses the old tab's menu.
+        // An old tab's open menu cannot act after switching the active session.
         edited.set(-1);
         right_click(30.0, 611.0);
         settle();
@@ -407,9 +386,12 @@ fn bottom_panel_controller_restores_selection_and_never_broadcasts() {
         settle();
         key(Key::Return.into());
         assert_eq!(edited.get(), -1);
+        click(195.0, 611.0);
+        ui.invoke_execute_bottom_command("ssh".into(), "wrong target".into());
+        assert_eq!(ran.borrow().len(), count);
+        assert_eq!(ui.get_bottom_panel_tab(), "quick-commands");
         ui.set_active_tab_id("ssh".into());
         settle();
-        // A group fold affects this view, and search expands matching results.
         click(50.0, 578.0);
         settle();
         assert!(
@@ -418,6 +400,7 @@ fn bottom_panel_controller_restores_selection_and_never_broadcasts() {
                 .unwrap()
                 .collapsed
         );
+        assert_eq!(ran.borrow().len(), count);
         ui.set_bottom_quick_query("UPGRADE".into());
         settle();
         assert!(
@@ -429,25 +412,22 @@ fn bottom_panel_controller_restores_selection_and_never_broadcasts() {
         ui.set_bottom_quick_query("".into());
         ui.invoke_toggle_bottom_group("default".into());
         settle();
-        // Show the original multiline command in the screenshot.
-        click(195.0, 611.0);
-        settle();
-        let pixels = settle();
         if let Ok(path) = std::env::var("MEATSHELL_BOTTOM_PANEL_SCREENSHOT") {
+            let pixels = settle();
             let raw: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
             image::save_buffer(path, &raw, 1200, 800, image::ColorType::Rgb8).unwrap();
         }
         let saved: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(path.clone()).unwrap()).unwrap();
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved["bottom_panel_tab"], "quick-commands");
-        // Switching Files/commands keeps the in-progress editor text.
         ui.invoke_select_bottom_panel("files".into());
         settle();
         ui.invoke_select_bottom_panel("quick-commands".into());
         settle();
-        click(890.0, 762.0);
-        assert_eq!(copied.borrow().last().unwrap(), "apt update\napt upgrade");
-        // Narrow docks stack the tiled area above the editor; all docks render.
+        click(195.0, 611.0);
+        assert_eq!(ran.borrow().len(), count + 1);
+        assert_eq!(ran.borrow().last().unwrap().1, "apt update\napt upgrade");
+        let count = ran.borrow().len();
         for dock in ["left", "right", "top", "bottom"] {
             ui.set_sftp_dock(dock.into());
             let pixels = settle();
@@ -458,29 +438,18 @@ fn bottom_panel_controller_restores_selection_and_never_broadcasts() {
                 }
             }
         }
-        ran.borrow_mut().clear();
-        // A second terminal or a new view uses the same window preference.
-        ui.set_active_tab_id("other".into());
-        settle();
-        assert_eq!(ui.get_bottom_panel_tab(), "quick-commands");
-        ui.invoke_execute_bottom_command("ssh".into(), "wrong target".into());
-        assert!(ran.borrow().is_empty());
-        ui.set_active_tab_id("ssh".into());
-        ui.invoke_recall_bottom_command("ssh".into(), "apt update\napt upgrade".into());
-        settle();
-        assert!(!ui.get_cmd_bar_hidden());
-        assert!(ran.borrow().is_empty());
-        window.dispatch_event(WindowEvent::KeyPressed {
-            text: Key::Return.into(),
-        });
-        window.dispatch_event(WindowEvent::KeyReleased {
-            text: Key::Return.into(),
-        });
-        assert_eq!(ran.borrow().last().unwrap().1, "apt update\napt upgrade");
-        ui.invoke_execute_bottom_command("ssh".into(), "docker ps -a".into());
-        assert_eq!(ran.borrow().last().unwrap().0, "ssh");
-        assert!(!ran.borrow().last().unwrap().2);
+        assert_eq!(ran.borrow().len(), count);
+        // Connection status blocks only sending; the offline context menu still works.
         ui.set_conn_state(0);
+        settle();
+        click(195.0, 611.0);
+        assert_eq!(ran.borrow().len(), count);
+        copied.borrow_mut().clear();
+        right_click(195.0, 611.0);
+        settle();
+        key(Key::DownArrow.into());
+        key(Key::Return.into());
+        assert_eq!(copied.borrow().last().unwrap(), "apt update\napt upgrade");
         ui.set_tabs(ModelRc::new(VecModel::from(
             tabs.into_iter()
                 .map(|mut t| {
@@ -489,10 +458,6 @@ fn bottom_panel_controller_restores_selection_and_never_broadcasts() {
                 })
                 .collect::<Vec<_>>(),
         )));
-        let count = ran.borrow().len();
-        settle();
-        click(1170.0, 762.0);
-        assert_eq!(ran.borrow().len(), count);
         ui.invoke_execute_bottom_command("ssh".into(), "offline".into());
         assert_eq!(ran.borrow().len(), count);
         ui.invoke_select_bottom_panel("tunnels".into());
@@ -502,14 +467,19 @@ fn bottom_panel_controller_restores_selection_and_never_broadcasts() {
         let mut terms: Vec<_> = ui.get_terminals().iter().collect();
         terms[0].sftp_available = false;
         ui.set_terminals(ModelRc::new(VecModel::from(terms)));
+        ui.set_tabs(ModelRc::new(VecModel::from(vec![TabInfo {
+            id: "ssh".into(),
+            kind: "terminal".into(),
+            connected: true,
+            ..Default::default()
+        }])));
+        ui.set_conn_state(1);
         settle();
-        // Effective fallback displays tiles without overwriting the saved Files tab.
         click(195.0, 611.0);
-        settle();
-        click(890.0, 762.0);
-        assert_eq!(copied.borrow().last().unwrap(), "apt update\napt upgrade");
+        assert_eq!(ran.borrow().len(), count + 1);
+        assert_eq!(ran.borrow().last().unwrap().1, "apt update\napt upgrade");
         assert_eq!(ui.get_bottom_panel_tab(), "files");
-        std::fs::write(path.clone(), b"{}\n").unwrap();
+        std::fs::write(&path, b"{}\n").unwrap();
         ui.invoke_select_bottom_panel("quick-commands".into());
         assert_eq!(ui.get_bottom_panel_tab(), "files");
         assert_eq!(store.borrow().bottom_panel_tab(), "files");

@@ -1,4 +1,4 @@
-import { LineEdit, TextEdit, Button } from "std-widgets.slint";
+import { LineEdit, Button } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
 // One saved quick command (#55): a name shown on the chip + the text to send.
@@ -66,19 +66,14 @@ export component QuickCommandPanel inherits Rectangle {
     in property <bool> connected: false;
     in property <bool> active: true;
     in-out property <string> query;
-    in-out property <string> draft;
-    in-out property <int> selected-index: -1;
-    in-out property <string> selected-name;
+    property <int> selected-index: -1;
     pure callback layout-commands([QuickCmd], float, float) -> [QuickCommandTile];
-    callback recall(string);
     callback execute(string);
     callback copy-command(string);
     callback edit(int);
     callback remove(int);
     callback toggle-group(string);
     callback manage();
-    property <bool> stacked: root.width < 620px;
-    property <length> left-width: root.stacked ? root.width : max(300px, root.width * 0.72);
     property <[QuickCommandTile]> tiles: root.layout-commands(root.commands, max(1, tiles-view.width / 1px), Theme.fs-sm / 1px);
     property <length> flow-height: root.tiles.length == 0 ? 0px
         : (root.tiles[root.tiles.length - 1].y + 36) * 1px;
@@ -88,7 +83,7 @@ export component QuickCommandPanel inherits Rectangle {
     property <length> context-x;
     property <length> context-y;
     property <bool> context-open: false;
-    changed commands => { root.close-context(); }
+    changed commands => { root.close-context(); root.selected-index = -1; }
     changed width => { root.close-context(); }
     changed height => { root.close-context(); }
     changed active => { if !root.active { root.close-context(); } }
@@ -122,7 +117,7 @@ export component QuickCommandPanel inherits Rectangle {
         else if action == 1 { root.copy-command(target.command); }
         else if action == 2 {
             if root.selected-index == target.orig-index {
-                root.selected-index = -1; root.selected-name = "";
+                root.selected-index = -1;
             } else if root.selected-index > target.orig-index { root.selected-index -= 1; }
             root.remove(target.orig-index);
         }
@@ -130,12 +125,12 @@ export component QuickCommandPanel inherits Rectangle {
     background: Theme.bg-panel;
     clip: true;
 
-    // Left: groups and named command tiles. Only overflowing content scrolls.
+    // Full-width saved commands; a left click sends to the current session.
     Rectangle {
         x: 0px;
         y: 0px;
-        width: root.left-width;
-        height: root.stacked ? max(100px, parent.height * 0.55) : parent.height;
+        width: root.width;
+        height: root.height;
         VerticalLayout {
             padding: 6px;
             spacing: 4px;
@@ -202,10 +197,9 @@ export component QuickCommandPanel inherits Rectangle {
                         }
                         clicked => {
                             if tile.header { root.toggle-group(tile.item.group); }
-                            else {
+                            else if root.connected && root.active {
                                 root.selected-index = tile.item.orig-index;
-                                root.selected-name = tile.item.name;
-                                root.draft = tile.item.command;
+                                root.execute(tile.item.command);
                             }
                         }
                     }
@@ -257,65 +251,17 @@ export component QuickCommandPanel inherits Rectangle {
                     clicked => { root.manage(); }
                 }
                 Rectangle { horizontal-stretch: 1; }
-                Button {
-                    text: @tr("Fill command bar");
-                    enabled: root.draft != "";
-                    clicked => { root.recall(root.draft); }
+                Text {
+                    text: root.connected ? @tr("Click a command to send to the current session") : @tr("Connect to a session to send commands");
+                    color: Theme.text-muted;
+                    font-size: Theme.fs-xs;
+                    overflow: elide;
+                    vertical-alignment: center;
                 }
             }
         }
     }
 
-    // Right: editable full command, including multiline scripts.
-    Rectangle {
-        x: root.stacked ? 0px : root.left-width;
-        y: root.stacked ? max(100px, parent.height * 0.55) : 0px;
-        width: root.stacked ? parent.width : parent.width - root.left-width;
-        height: root.stacked ? parent.height - self.y : parent.height;
-        border-width: 1px;
-        border-color: Theme.border-subtle;
-        VerticalLayout {
-            padding: 5px;
-            spacing: 4px;
-            Text {
-                height: 24px;
-                text: root.selected-name == "" ? @tr("Command editor") : @tr("Command editor") + " · " + root.selected-name;
-                font-size: Theme.fs-sm;
-                color: Theme.text-secondary;
-                overflow: elide;
-                vertical-alignment: center;
-            }
-            TextEdit {
-                text <=> root.draft;
-                wrap: word-wrap;
-                vertical-stretch: 1;
-                accessible-label: @tr("Command editor");
-            }
-            HorizontalLayout {
-                height: 28px;
-                spacing: 5px;
-                Button {
-                    text: @tr("Copy");
-                    enabled: root.draft != "";
-                    clicked => { root.copy-command(root.draft); }
-                }
-                Text {
-                    text: @tr("Current session");
-                    color: Theme.text-muted;
-                    font-size: Theme.fs-xs;
-                    horizontal-stretch: 1;
-                    horizontal-alignment: right;
-                    vertical-alignment: center;
-                }
-                Button {
-                    text: @tr("Send");
-                    primary: true;
-                    enabled: root.connected && root.draft != "";
-                    clicked => { root.execute(root.draft); }
-                }
-            }
-        }
-    }
     command-menu := PopupWindow {
         forward-focus: menu-keys;
         x: root.context-x;

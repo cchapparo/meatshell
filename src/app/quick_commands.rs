@@ -144,16 +144,6 @@ pub(super) fn wire_bottom_commands(window: &AppWindow, store: Rc<RefCell<ConfigS
     });
 
     let weak = window.as_weak();
-    window.on_recall_bottom_command(move |tab, command| {
-        if let Some(w) = weak.upgrade() {
-            if tab != w.get_active_tab_id() || !w.get_terminals().iter().any(|t| t.id == tab) {
-                return;
-            }
-            w.set_cmd_bar_hidden(false);
-            w.invoke_recall_command(command);
-        }
-    });
-    let weak = window.as_weak();
     window.on_execute_bottom_command(move |tab, command| {
         if let Some(w) = weak.upgrade() {
             if tab == w.get_active_tab_id()

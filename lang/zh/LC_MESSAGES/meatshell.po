@@ -867,3 +867,9 @@ msgstr "命令编辑器"
 
 msgid "Current session"
 msgstr "当前会话"
+
+msgid "Click a command to send to the current session"
+msgstr "点击命令直接发送到当前会话"
+
+msgid "Connect to a session to send commands"
+msgstr "连接会话后可点击命令直接发送"
